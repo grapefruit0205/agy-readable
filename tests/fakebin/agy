@@ -10,6 +10,7 @@ import sys
 import time
 
 MF = os.environ.get("FAKE_MODE_FILE")
+DIGITS = str.maketrans("0123456789", "abcdefghij")  # the marker must not add numbers the check would reject
 MODEL = sys.argv[sys.argv.index("--model") + 1] if "--model" in sys.argv else "?"
 
 
@@ -63,6 +64,7 @@ def sign_in_or_exit():
         err("error: authentication failed or timed out")
         sys.exit(1)
     wait = float(os.environ.get("FAKE_LOGIN_WAIT", "60"))
+    time.sleep(float(os.environ.get("FAKE_LOGIN_DELAY", "0")))  # agy slow to start
     err("Authentication required. Please visit the URL to log in:")
     err(f"  https://accounts.google.com/o/oauth2/auth?client_id=fake&state={os.getpid()}")
     err("")
@@ -113,7 +115,7 @@ if "--input-format" in sys.argv:
             sys.exit(1)
         time.sleep(float(os.environ.get("FAKE_GEN", "0.2")))
         emit({"event": "result", "result": {"status": "SUCCESS", "usage": {"input_tokens": 14500},
-                                            "response": f"[다듬음 pid={os.getpid()} turn={turn} model={MODEL}]\n" + body}})
+                                            "response": f"[다듬음 pid={os.getpid()} turn={turn} model={MODEL}]".translate(DIGITS) + "\n" + body}})
     sys.exit(0)
 
 prompt = sys.argv[sys.argv.index("-p") + 1]
@@ -131,7 +133,9 @@ if m == "dropnum":
     body = body.replace("1,024", "천여")
 if m == "listbullets":
     body = re.sub(r"(?m)^\d+\. ", "- ", body)
-out = f"[다듬음 model={MODEL}]\n" + body
+if m == "droptoken":
+    body = body.replace("⟦0⟧", "", 1)
+out = f"[다듬음 model={MODEL}]".translate(DIGITS) + "\n" + body
 if m == "fence":
     out = "```markdown\n" + out + "\n```"
 print(out)

@@ -116,6 +116,8 @@ class LoginTest(unittest.TestCase):
 
     def test_06_code_after_sign_in(self):
         self.assertIn("이미 로그인되어", self.prompt(GOOD)["reason"])
+        # signed in, a new attempt finds no sign-in prompt: agy answers the test prompt, which is the proof
+        self.assertIn("이미 로그인되어", self.prompt("/agy-readable:login")["reason"])
 
     def test_07_late_code_starts_over(self):
         self.stop()
@@ -149,6 +151,26 @@ class LoginTest(unittest.TestCase):
         out, took = self.answer(AGY_READABLE_DAEMON="0")
         self.assertIn("Antigravity 로그인이 필요합니다", out)
         self.assertLess(took, 12)
+
+
+    def test_11_slow_agy_is_not_taken_for_signed_in(self):
+        # no URL within the daemon's 10 s wait: agy may just be slow to start, so it is not "already signed in"
+        self.stop()
+        self.set_auth("no")
+        before = len(self.opened_urls())
+        subprocess.Popen([sys.executable, "-m", "agy_readable.daemon"], cwd=ROOT,
+                         env=dict(self.env, PYTHONPATH=ROOT, FAKE_LOGIN_DELAY="12"), stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        r = self.prompt("/agy-readable:login")
+        self.assertIn("로그인 주소를 아직 받지 못했습니다", r["reason"])
+        self.assertNotIn("이미 로그인", r["reason"])
+        self.assertEqual(self.ping()["login"], "starting")
+        time.sleep(2.5)
+        r = self.prompt("/agy-readable:login")  # the same attempt, now with its URL: shown once, browser opened
+        self.assertIn("https://accounts.google.com/", r["reason"])
+        self.assertEqual(len(self.opened_urls()), before + 1)
+        with open(self.auth) as f:
+            self.assertEqual(f.read(), "no")
 
 
 if __name__ == "__main__":

@@ -49,6 +49,7 @@ AUTH_ERROR = re.compile(r"authenticat", re.I)  # agy: "authentication required" 
 AUTH_RECHECK = 60  # while signed out, try a spare this often, in case the user signed in some other way
 LOGIN_WINDOW = 60  # agy waits this long for the sign-in code (fixed in agy)
 LOGIN_COOLDOWN = 600  # an answer opens the sign-in page on its own at most this often
+LOGIN_URL_WAIT = 10  # a signed-out agy prints its URL within a second; longer means it is still starting
 SIGNIN_URL = re.compile(r"https://accounts\.google\.com/\S+")
 
 
@@ -209,6 +210,7 @@ class Login:
         self.error = None
         self.answered = False
         self.code_sent = False
+        self.shown = False  # the URL has been handed out
         self.rc = None
         self.changed = threading.Condition()
         self.master, slave = pty.openpty()
@@ -433,33 +435,44 @@ class Daemon:
             self.next_spawn = 0.0  # start a spare right away
 
     def login_start(self, auto):
-        """Start a sign-in attempt and return its URL. An answer (auto) reuses a pending attempt and opens
-        a new one at most every LOGIN_COOLDOWN; `agy-readable login` always starts over."""
+        """Start a sign-in attempt, or join the one under way, and return its URL.
+
+        An attempt whose agy is still starting is always joined (a new agy would not start faster). One
+        whose URL was already shown is reused by answers (auto) and replaced by `agy-readable login`.
+        Answers start a new attempt at most every LOGIN_COOLDOWN. agy counts as signed in only once it
+        has answered the test prompt or exited cleanly: no URL yet may just mean agy is slow to start."""
         with self.lock:
             self.last_used = time.time()
             cur = self.login
-            if cur and cur.state() == "waiting":
-                if auto:
-                    return {"ok": True, "url": cur.url, "fresh": False,
-                            "left": round(cur.started + LOGIN_WINDOW - time.time())}
+            state = cur.state() if cur else None
+            if state == "waiting" and cur.shown and not auto:
                 cur.kill()
-            if auto and time.time() - self.last_auto_login < LOGIN_COOLDOWN:
-                return {"ok": False, "cooldown": True}
-            if auto:
-                self.last_auto_login = time.time()
-            try:
-                cur = self.login = Login(self.model, self.on_login_ok)
-            except OSError as e:
-                return {"ok": False, "error": f"agy 실행 실패 ({e.strerror})"}
-        cur.wait_for(lambda: cur.url or cur.rc is not None or cur.answered, 10)  # signed out: the URL comes at once
-        if cur.url:
-            log(login="started", auto=auto)
-            return {"ok": True, "url": cur.url, "fresh": True,
-                    "left": round(cur.started + LOGIN_WINDOW - time.time())}
-        if cur.error or cur.rc not in (None, 0):
+                cur = None
+            elif state not in ("starting", "waiting"):
+                cur = None
+            if cur is None:
+                if auto and time.time() - self.last_auto_login < LOGIN_COOLDOWN:
+                    return {"ok": False, "cooldown": True}
+                try:
+                    cur = self.login = Login(self.model, self.on_login_ok)
+                except OSError as e:
+                    return {"ok": False, "error": f"agy 실행 실패 ({e.strerror})"}
+        cur.wait_for(lambda: cur.url or cur.rc is not None or cur.answered, LOGIN_URL_WAIT)
+        if cur.rc == 0 or cur.answered:
+            self.signed_in()
+            return {"ok": True, "already": True}
+        if cur.error or cur.rc is not None:
             return {"ok": False, "error": cur.error or f"agy 종료됨 (코드 {cur.rc})"}
-        self.signed_in()  # no sign-in prompt: agy is signed in and is answering the test prompt
-        return {"ok": True, "already": True}
+        if not cur.url:
+            log(login="still_starting", after=round(time.time() - cur.started, 1))
+            return {"ok": False, "pending": True}
+        with self.lock:
+            fresh, cur.shown = not cur.shown, True
+            if fresh and auto:
+                self.last_auto_login = time.time()
+        if fresh:
+            log(login="started", auto=auto)
+        return {"ok": True, "url": cur.url, "fresh": fresh, "left": round(cur.started + LOGIN_WINDOW - time.time())}
 
     def on_login_ok(self):
         log(login="ok")

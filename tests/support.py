@@ -30,6 +30,16 @@ SAMPLE = """설정 파일을 다시 읽도록 바꿨습니다. 이제 `config.lo
 """
 
 
+def decode(text):
+    """The fake agy writes the digits in its marker as letters (a=0 ... j=9); for letters-only fields."""
+    return text.translate(str.maketrans("abcdefghij", "0123456789"))
+
+
+def encode(text):
+    """A marker text as the fake agy writes it."""
+    return text.translate(str.maketrans("0123456789", "abcdefghij"))
+
+
 def clean_env(data_dir, **extra):
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("AGY_READABLE_", "CLAUDE_PLUGIN_OPTION_", "FAKE_"))}

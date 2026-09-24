@@ -12,14 +12,14 @@ import time
 import unittest
 from unittest import mock
 
-from support import ROOT, SAMPLE, clean_env, event, new_data_dir, read_jsonl, remove, run_hook, stream, wait_until
+from support import ROOT, SAMPLE, clean_env, decode, encode, event, new_data_dir, read_jsonl, remove, run_hook, stream, wait_until
 
 from agy_readable import __version__, daemon
 
 
 def marker(out):
-    m = re.match(r"\[다듬음 pid=(\d+) turn=(\d+) model=(\S+)\]", out)
-    return (int(m.group(1)), int(m.group(2)), m.group(3)) if m else None
+    m = re.match(r"\[다듬음 pid=([a-j]+) turn=([a-j]+) model=(\S+)\]", out)
+    return (int(decode(m.group(1))), int(decode(m.group(2))), m.group(3)) if m else None
 
 
 class DaemonTest(unittest.TestCase):
@@ -205,7 +205,7 @@ class DaemonTest(unittest.TestCase):
     def test_11_model_change_reaches_daemon(self):
         wait_until(self.spare_ready)
         out, _ = self.ask(CLAUDE_PLUGIN_OPTION_MODEL="gemini-3.8-flash-medium")
-        self.assertEqual(marker(out)[2], "gemini-3.8-flash-medium")
+        self.assertEqual(marker(out)[2], encode("gemini-3.8-flash-medium"))
         self.assertEqual(self.ping()["model"], "gemini-3.8-flash-medium")
         self.assertTrue(any(e.get("model_changed") for e in self.daemon_log()))
 

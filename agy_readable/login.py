@@ -3,7 +3,7 @@
 When agy is not signed in, the daemon runs agy's own sign-in flow (see daemon.Login) and the hook shows
 the Google sign-in URL under the answer, opening it in the browser. The sign-in page then shows a code;
 the user pastes it into Claude Code's prompt, where this module's UserPromptSubmit hook takes it, hands it
-to the waiting agy and blocks the prompt, so the code never reaches the model or the transcript.
+to the waiting agy and blocks the prompt, so the code never reaches the model.
 """
 import json
 import os
@@ -59,6 +59,9 @@ def note(r, markdown=True):
         return "Antigravity에 이미 로그인되어 있습니다. 다음 답변부터 다듬습니다."
     if r.get("cooldown"):
         return "Antigravity 로그인이 필요합니다. " + RETRY
+    if r.get("pending"):
+        return ("Antigravity 로그인이 필요한데, agy 시작이 늦어져 로그인 주소를 아직 받지 못했습니다. "
+                "잠시 뒤 입력창에 `/agy-readable:login`을 입력하세요.")
     if not r.get("ok"):
         return f"Antigravity 로그인을 시작하지 못했습니다 ({r.get('error')}). " + RETRY
     url, left = r["url"], r.get("left", 60)

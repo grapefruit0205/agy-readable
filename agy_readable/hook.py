@@ -1,8 +1,12 @@
 """MessageDisplay hook: hide Claude's answer while it streams, then show it rewritten by agy in plainer Korean.
 
 Claude Code runs up to 3 flushes of one message at once, so each delta goes to its own file
-(<data dir>/state/<message_id>/<index>.txt) and the final flush joins them in index order.
-When agy is slow, fails, or drops code/numbers, the original text is shown with a one-line note.
+(<data dir>/state/<message_id>/<index>.txt) and the final flush joins them in index order. If a part never
+arrives, the answer is shown as it is, with a warning where the part is missing: those lines were already
+hidden while streaming, so leaving the gap unmarked would lose them silently.
+
+Code, links, URLs and paths never reach agy (see protect.py), and the rewrite is checked before it is
+shown. When agy is slow or fails, or the check fails, the original text is shown with a one-line note.
 
 agy runs through the daemon (agy_readable.daemon), which keeps a pre-started single-use agy waiting;
 the first flush of each message starts the daemon if it is down. If the daemon cannot be reached,
@@ -17,14 +21,14 @@ import subprocess
 import sys
 import time
 
-from agy_readable import config, daemon, login
+from agy_readable import config, daemon, login, protect
 
 PROMPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_ko.txt")
-PART_WAIT = 3.0  # how long the final flush waits for earlier flushes still writing their part
 STALE = 3600  # leftover state from aborted messages is removed after this many seconds
+GAP = ("\n\n> ⚠️ agy-readable: 이 자리에 있어야 할 답변 일부를 화면에 표시하지 못했습니다. "
+       "Claude가 저장한 답변에는 전체가 있습니다(`/export`로 볼 수 있음).\n\n")
 
 SIGNED_OUT = "Antigravity 로그인 필요"
-FENCE = re.compile(r"```[^\n]*\n(.*?)```", re.S)
 HANGUL = re.compile(r"[가-힣]")
 
 
@@ -49,20 +53,31 @@ def write_part(mdir, index, text):
 
 
 def read_parts(mdir, last):
-    """Join parts 0..last, waiting briefly for flushes that started earlier but have not written yet."""
-    deadline = time.time() + PART_WAIT
+    """Parts 0..last in order (None for one that never came), waiting for flushes that started earlier
+    but have not written their part yet."""
+    deadline = time.time() + config.PART_WAIT
     paths = [os.path.join(mdir, f"{i:06d}.txt") for i in range(last + 1)]
-    while True:
-        missing = [p for p in paths if not os.path.exists(p)]
-        if not missing or time.time() > deadline:
-            break
+    while any(not os.path.exists(p) for p in paths) and time.time() < deadline:
         time.sleep(0.02)
-    text = ""
+    parts = []
     for p in paths:
-        if os.path.exists(p):
+        try:
             with open(p, encoding="utf-8") as f:
-                text += f.read()
-    return text, len(missing)
+                parts.append(f.read())
+        except FileNotFoundError:
+            parts.append(None)
+    return parts
+
+
+def join_parts(parts):
+    """The parts in order, with one warning for each run of missing parts."""
+    text = ""
+    for i, part in enumerate(parts):
+        if part is not None:
+            text += part
+        elif i == 0 or parts[i - 1] is not None:
+            text = text.rstrip("\n") + GAP
+    return text
 
 
 def prune_stale():
@@ -83,25 +98,9 @@ def skip_reason(text):
         return "long"
     if not HANGUL.search(text):
         return "no_korean"
-    if sum(len(m.group(0)) for m in FENCE.finditer(text)) > len(text) * 0.6:
+    if sum(len(m.group(0)) for m in protect.FENCED.finditer(text)) > len(text) * 0.6:
         return "mostly_code"
     return None
-
-
-def must_keep(text):
-    """Code, link targets and numbers that the rewritten text has to carry over unchanged."""
-    keep = {m.group(1).strip() for m in FENCE.finditer(text)}
-    prose = FENCE.sub("", text)
-    keep |= set(re.findall(r"`([^`\n]+)`", prose))
-    keep |= set(re.findall(r"\]\(([^)\s]+)\)", prose))
-    prose = re.sub(r"(?m)^\s*\d+[.)]\s", "", prose)  # list numbering may legitimately become bullets
-    return keep, {n.replace(",", "") for n in re.findall(r"\d+(?:[.,]\d+)*", prose)}
-
-
-def lost(orig, new):
-    keep, nums = must_keep(orig)
-    new_nums = {n.replace(",", "") for n in re.findall(r"\d+(?:[.,]\d+)*", new)}
-    return sorted(k for k in keep if k not in new) + sorted(nums - new_nums)
 
 
 def over_budget():
@@ -158,27 +157,23 @@ def ask_agy(prompt):
 
 def rewrite(text):
     """Returns (rewritten text or None, reason when None, how agy ran)."""
+    masked, spans = protect.mask(text)
+    if masked is None:
+        return None, "원문에 ⟦숫자⟧ 표기가 있어 보호할 수 없음", None
     with open(PROMPT, encoding="utf-8") as f:
-        prompt = f.read() + text
+        prompt = f.read() + masked
     out, why, how = ask_agy(prompt)
     if out is None:
         return None, why, how
-    out = out.strip()
-    if out.startswith("```") and not text.lstrip().startswith("```"):  # model wrapped the answer in a fence
-        out = re.sub(r"^```[^\n]*\n|\n?```$", "", out).strip()
-    if not 0.5 <= len(out) / len(text) <= 2.0:
-        return None, f"결과 길이가 비정상 ({len(text)}→{len(out)}자)", how
-    missing = lost(text, out)
-    if missing:
-        return None, "코드·숫자 일부가 바뀜: " + ", ".join(m if len(m) <= 30 else m[:30] + "…" for m in missing[:3]), how
-    return out, None, how
+    refined, why = protect.restore(text, masked, spans, out)
+    return refined, why, how
 
 
-def finish(event, full, n_missing):
+def finish(event, full):
     reason = skip_reason(full)
     if reason:
         log(msg=event["message_id"][:8], parts=event.get("index", 0) + 1, chars=len(full), outcome="skipped",
-            reason=reason, parts_missing=n_missing)
+            reason=reason)
         return full
     if not shutil.which(config.AGY):
         why, refined, how, seconds = f"agy를 찾을 수 없음 ({config.AGY})", None, None, 0.0
@@ -187,7 +182,7 @@ def finish(event, full, n_missing):
         refined, why, how = rewrite(full)
         seconds = round(time.time() - start, 1)
     log(msg=event["message_id"][:8], parts=event.get("index", 0) + 1, chars=len(full), out=len(refined or ""),
-        seconds=seconds, via=how, outcome="refined" if refined else "fallback", reason=why, parts_missing=n_missing)
+        seconds=seconds, via=how, outcome="refined" if refined else "fallback", reason=why)
     if refined:
         return refined
     if why == SIGNED_OUT:  # the one note shown even with notes off: without it the plugin never works
@@ -215,10 +210,17 @@ def main():
         return
     full = None
     try:
-        full, n_missing = read_parts(mdir, int(event.get("index", 0)))
+        parts = read_parts(mdir, int(event.get("index", 0)))
+        full = join_parts(parts)
         shutil.rmtree(mdir, ignore_errors=True)
         prune_stale()
-        reply(finish(event, full, n_missing))
+        missing = [i for i, part in enumerate(parts) if part is None]
+        if missing:  # never rewrite a partial answer: show what there is, and where the rest is missing
+            log(msg=event["message_id"][:8], parts=len(parts), chars=len(full), outcome="incomplete",
+                parts_missing=len(missing), missing_at=missing[:10])
+            reply(full)
+            return
+        reply(finish(event, full))
     except Exception as e:  # never leave the earlier (hidden) lines off screen
         log(msg=event["message_id"][:8], outcome="error", reason=repr(e)[-300:])
         reply(full if full is not None else event.get("delta", ""))

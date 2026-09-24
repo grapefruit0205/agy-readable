@@ -34,6 +34,7 @@ SPARES = opt("SPARES", 1)
 IDLE_EXIT = opt("IDLE_EXIT", 1800.0)  # the daemon stops, freeing its spare agy, after this long unused
 HEDGE_AFTER = opt("HEDGE_AFTER", 8.0)  # + 1 s per 400 prompt chars; a warm Flash Low answers in 3-7 s
 STUCK_AFTER = opt("STUCK_AFTER", 20.0)  # a healthy agy is ready in 4-10 s; past this it is probably stuck
+PART_WAIT = opt("PART_WAIT", 10.0)  # how long the final flush waits for a part an earlier flush has not written
 BROWSER = opt("BROWSER", "")  # command that opens the sign-in page; "" = open / xdg-open, "none" = only show the link
 
 

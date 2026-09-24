@@ -2,10 +2,14 @@
 import json
 import os
 import subprocess
+import threading
 import time
 import unittest
+import uuid
 
-from support import ROOT, SAMPLE, clean_env, event, new_data_dir, read_jsonl, remove, run_hook, stream
+from support import ROOT, SAMPLE, clean_env, encode, event, new_data_dir, read_jsonl, remove, run_hook, stream
+
+from agy_readable import protect
 
 
 class HookTest(unittest.TestCase):
@@ -20,7 +24,21 @@ class HookTest(unittest.TestCase):
         return run_hook(dict(self.env, **env), event(text))
 
     def test_rewritten(self):
-        self.assertTrue(self.hook().startswith("[다듬음 model=gemini-3.8-flash-low]"))
+        self.assertTrue(self.hook().startswith(encode("[다듬음 model=gemini-3.8-flash-low]")))
+
+    def test_protected_parts_never_reach_agy_and_come_back_exactly(self):
+        out = self.hook()
+        with open(os.path.join(self.data, "rec.txt"), encoding="utf-8") as f:
+            sent = f.read()
+        for kept in ("`config.load()`", "`CACHE_TTL`", "[설계 메모](docs/cache.md)"):
+            self.assertIn(kept, SAMPLE)
+            self.assertNotIn(kept, sent)
+        self.assertEqual(out.split("\n", 1)[1], SAMPLE.strip())
+
+    def test_dropped_placeholder_rejected(self):
+        out = self.hook(FAKE_MODE="droptoken")
+        self.assertTrue(out.startswith(SAMPLE.rstrip()))
+        self.assertIn("코드·링크·경로 일부가 빠짐", out)
 
     def test_fenced_output_unwrapped(self):
         out = self.hook(FAKE_MODE="fence")
@@ -50,6 +68,35 @@ class HookTest(unittest.TestCase):
 
     def test_notes_off(self):
         self.assertNotIn("_(", self.hook(FAKE_MODE="fail", AGY_READABLE_NOTES="0"))
+
+    def test_missing_part_is_marked_not_rewritten(self):
+        # part 1 never arrives: its lines were hidden while streaming, so the gap must show
+        env = dict(self.env, AGY_READABLE_PART_WAIT="0.5")
+        mid = str(uuid.uuid4())
+        lines = SAMPLE.splitlines(keepends=True)
+        first, lost, last = "".join(lines[:4]), "".join(lines[4:8]), "".join(lines[8:])
+        self.assertEqual(run_hook(env, event(first, message_id=mid, index=0, final=False)), "")
+        out = run_hook(env, event(last, message_id=mid, index=2, final=True))
+        self.assertTrue(out.startswith(first.rstrip("\n")))
+        self.assertIn("답변 일부를 화면에 표시하지 못했습니다", out)
+        self.assertTrue(out.rstrip().endswith(last.rstrip()))
+        self.assertNotIn(lost.strip(), out)
+        self.assertFalse(os.path.exists(os.path.join(self.data, "rec.txt")), "a partial answer went to agy")
+        self.assertEqual(read_jsonl(os.path.join(self.data, "hook.log"))[-1]["outcome"], "incomplete")
+
+    def test_late_part_is_waited_for(self):
+        mid = str(uuid.uuid4())
+        lines = SAMPLE.splitlines(keepends=True)
+        parts = ["".join(lines[:4]), "".join(lines[4:8]), "".join(lines[8:])]
+        run_hook(self.env, event(parts[0], message_id=mid, index=0, final=False))
+        result = {}
+        final = threading.Thread(target=lambda: result.update(
+            out=run_hook(self.env, event(parts[2], message_id=mid, index=2, final=True))))
+        final.start()
+        time.sleep(1.0)
+        run_hook(self.env, event(parts[1], message_id=mid, index=1, final=False))
+        final.join()
+        self.assertEqual(result["out"].split("\n", 1)[1], SAMPLE.strip())
 
     def test_plugin_options(self):
         # /plugin configure values arrive as CLAUDE_PLUGIN_OPTION_*; AGY_READABLE_* wins over them
@@ -90,7 +137,7 @@ class HookTest(unittest.TestCase):
                 os.remove(rec)
             stream(self.env, SAMPLE)
             with open(rec, encoding="utf-8") as f:
-                self.assertEqual(f.read(), SAMPLE)
+                self.assertEqual(f.read(), protect.mask(SAMPLE)[0])
 
     def test_log_keeps_outcomes_not_text(self):
         self.hook()
