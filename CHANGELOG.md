@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0 — 2026-09-24
+
+- Sign-in from inside Claude Code. When agy is not signed in to Antigravity, the answer shows a sign-in note and the Google sign-in page opens in the browser; the code the page shows, pasted into the prompt, is taken by a `UserPromptSubmit` hook (it never reaches the model) and typed into agy's own sign-in, which stores the token as usual. Wrong or late codes start a fresh attempt. `/agy-readable:login` and `agy-readable login` start one on demand.
+- A signed-out agy no longer costs retries: the daemon stops hedging, starts no spares, and checks again every minute. A one-shot `agy -p` gets a closed pipe as stdin, so a signed-out agy fails at once instead of waiting 60 s for a code.
+- `AGY_READABLE_BROWSER`: the command that opens the sign-in page, or `none`.
+
 ## 0.1.0 — 2026-09-24
 
 First release.

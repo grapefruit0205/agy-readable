@@ -1,5 +1,5 @@
 {
-  "description": "agy-readable: hide Claude's answer while it streams, then show it rewritten into plainer Korean by agy (Antigravity CLI). If agy is slow or fails, the original answer is shown with a one-line note.",
+  "description": "agy-readable: hide Claude's answer while it streams, then show it rewritten into plainer Korean by agy (Antigravity CLI). If agy is slow or fails, the original answer is shown with a one-line note. When agy is not signed in, it offers the Google sign-in and takes the code pasted into the prompt.",
   "hooks": {
     "MessageDisplay": [
       {
@@ -8,6 +8,17 @@
             "type": "command",
             "command": "f=\"${CLAUDE_PLUGIN_ROOT}/hooks/run\"; [ -f \"$f\" ] || { cat >/dev/null; exit 0; }; sh \"$f\"; exit 0",
             "timeout": 120
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"${CLAUDE_PLUGIN_ROOT}/hooks/run\"; [ -f \"$f\" ] || { cat >/dev/null; exit 0; }; sh \"$f\" prompt; exit 0",
+            "timeout": 60
           }
         ]
       }

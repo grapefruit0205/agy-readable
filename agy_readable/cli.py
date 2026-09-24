@@ -1,15 +1,17 @@
-"""`agy-readable status | log [N] | stop`: see what the hook and the daemon are doing."""
+"""`agy-readable status | login | log [N] | stop`: see what the hook and the daemon are doing, sign agy in."""
+import getpass
 import json
 import os
 import shutil
 import sys
 import time
 
-from agy_readable import __version__, config, daemon
+from agy_readable import __version__, config, daemon, login
 
 USAGE = """usage: agy-readable <command>
 
   status     settings, agy, daemon and the last answers' outcomes
+  login      sign agy in to Antigravity (opens the Google sign-in page)
   log [N]    the last N hook log lines (default 20)
   stop       stop the daemon and its pre-started agy (it restarts with the next answer)
 """
@@ -55,6 +57,8 @@ def status():
     print(f"  agy        {agy or '찾을 수 없음 (' + config.AGY + ')'}")
     print(f"  model      {config.MODEL}   timeout {config.TIMEOUT:g}s   notes {'on' if config.NOTES else 'off'}")
     p = ping()
+    if p and p.get("auth_required"):
+        print("  sign-in    Antigravity 로그인 필요: `agy-readable login`")
     if p:
         spares = ", ".join(f"{s['pid']} {'ready' if s['ready'] else 'starting'} {s['age']:.0f}s" for s in p["spares"])
         print(f"  daemon     pid {p['pid']}  model {p.get('model')}  spares [{spares}]  busy {p['busy']}  fails {p['fails']}")
@@ -67,6 +71,30 @@ def status():
             print("  " + describe(e))
 
 
+def sign_in():
+    if not shutil.which(config.AGY):
+        print(f"agy를 찾을 수 없습니다 ({config.AGY}). Antigravity CLI를 먼저 설치하세요.")
+        return 1
+    r = login.start(auto=False)
+    if not r.get("ok") or r.get("already"):
+        print(login.note(r, markdown=False))
+        return 0 if r.get("already") else 1
+    if not sys.stdin.isatty():  # Claude's Bash tool: the code goes into Claude Code's prompt instead
+        print(login.note(r, markdown=False))
+        return 0
+    print(("브라우저에 Google 로그인 페이지를 열었습니다.\n" if r["opened"] else "") + f"Google 로그인 페이지:\n{r['url']}\n")
+    code = getpass.getpass(f"로그인 후 페이지에 나온 코드를 {r['left']}초 안에 붙여넣고 Enter: ").strip()
+    try:
+        res = daemon.call({"op": "login_code", "code": code}, 45)
+    except (OSError, ValueError) as e:
+        res = {"ok": False, "error": str(e)}
+    if res.get("ok"):
+        print("로그인했습니다. 다음 답변부터 다듬습니다.")
+        return 0
+    print(f"로그인하지 못했습니다 ({res.get('error')}). `agy-readable login`을 다시 실행하세요.")
+    return 1
+
+
 def main(argv=None):
     args = sys.argv[1:] if argv is None else argv
     cmd = args[0] if args else "status"
@@ -76,6 +104,8 @@ def main(argv=None):
         n = int(args[1]) if len(args) > 1 else 20
         for e in read_log("hook.log", n):
             print(describe(e))
+    elif cmd == "login":
+        return sign_in()
     elif cmd == "stop":
         if ping():
             daemon.call({"op": "stop"}, 5)

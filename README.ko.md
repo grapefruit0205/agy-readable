@@ -13,7 +13,7 @@
 - Claude Code **2.1.280 이상** (`MessageDisplay` 훅). 터미널과 데스크톱 앱 모두 됩니다.
 - **Linux 또는 macOS**. Windows는 지원하지 않습니다(보조 프로세스가 유닉스 소켓을 씁니다). Windows에서는 훅이 아무것도 하지 않아 답변이 그대로 보입니다.
 - `python3` 또는 `python`으로 실행되는 **Python 3.8 이상**
-- **agy 설치와 본인 Antigravity 계정 로그인**. 터미널에서 `agy -p "hello"`가 답하면 됩니다.
+- PATH에 있는 **agy(Antigravity CLI)**. 본인 Antigravity 계정으로 로그인되어 있어야 합니다. 로그인이 안 되어 있으면 agy-readable이 Claude Code 안에서 로그인을 요청합니다([Antigravity 로그인](#antigravity-로그인)).
   - agy는 헤드리스로 동작합니다. Antigravity가 OS 키링에 저장해 둔 OAuth 토큰으로 로그인합니다.
   - agy-readable은 PATH에 있는 `agy`를 실행할 뿐입니다. 인증 정보를 읽거나 복사하거나 저장하지 않고, 플러그인에 들어 있는 인증 정보도 없습니다.
   - 그래서 설치한 사람마다 자기 로그인과 자기 할당량으로 돌아갑니다.
@@ -31,6 +31,24 @@ Claude Code 안에서는 `/plugin marketplace add grapefruit0205/agy-readable` �
 - 잠시 끄기: `claude plugin disable agy-readable@agy-readable`
 - 제거: `claude plugin uninstall agy-readable@agy-readable`
 
+## Antigravity 로그인
+
+agy-readable은 agy 자체의 로그인 절차를 씁니다. 비밀번호나 토큰은 다루지 않습니다. agy가 로그인되어 있지 않으면 이렇게 진행됩니다.
+
+1. 다음 답변이 원문 그대로 나오고, 아래에 *Antigravity 로그인이 필요합니다…* 안내가 붙습니다. 브라우저에 Google 로그인 페이지가 열립니다(macOS, 데스크톱이 있는 Linux). 안내에도 링크가 있습니다.
+2. 로그인하고 권한을 허용합니다. 그러면 페이지에 `4/`로 시작하는 코드가 나옵니다.
+3. 그 코드만 Claude Code 입력창에 붙여넣고 Enter를 누릅니다. **안내가 나온 뒤 60초 안에** 해야 합니다(agy에 정해진 제한).
+   - agy-readable이 입력창에서 코드를 가져가므로 Claude에게는 전달되지 않습니다.
+   - 코드를 agy에 넘긴 뒤 *Antigravity 로그인이 끝났습니다*라고 알려 줍니다. 다음 답변부터 다듬어집니다.
+
+60초가 지났거나 코드가 틀리면 그렇다고 알려 주고 새 로그인 페이지를 엽니다. 안내를 그냥 넘긴 경우, 10분 동안은 답변마다 페이지를 다시 열지 않습니다. 언제든 입력창에 `/agy-readable:login`을 입력해 다시 시작할 수 있습니다. 이 컴퓨터에 브라우저가 없다면(SSH 접속 등) 터미널에서 `agy`를 한 번 실행해도 같은 방법으로 로그인됩니다.
+
+동작 방식은 이렇습니다.
+- agy는 입력이 터미널일 때만 로그인 절차를 보여 줍니다. 그래서 데몬이 가상 터미널에서 `agy -p ok`를 실행하고, agy가 출력한 주소를 보여 준 뒤, 붙여넣은 코드를 그 터미널에 입력합니다.
+- 코드를 토큰으로 바꾸고 OS 키링에 저장하는 일은 agy가 평소처럼 합니다. 이때 한 번 보내는 `ok` 요청이 유일한 모델 호출입니다.
+- Claude Code는 막힌 입력을 "Original prompt"로 화면에 다시 보여 줍니다. 코드는 한 번만 쓸 수 있고 그 로그인 시도에만 묶여 있어서, 그 뒤에는 쓸모가 없습니다.
+- `AGY_READABLE_BROWSER=none`으로 두면 링크만 보여 줍니다. 명령을 넣으면 그 명령으로 엽니다.
+
 ## 화면에서 보이는 것
 
 Claude가 답을 쓰는 동안에는 답변이 보이지 않습니다. 다 쓰고 나면 다시 쓴 답변이 한 번에 나타납니다.
@@ -43,6 +61,7 @@ Claude가 답을 쓰는 동안에는 답변이 보이지 않습니다. 다 쓰�
 
 다시 쓴 답을 쓰지 않을 때는 원문 아래에 `_(다듬기 생략: agy 응답이 40초를 넘음 · 원문 표시)_` 같은 한 줄이 붙습니다. 이유는 다음 중 하나입니다.
 
+- agy가 로그인되어 있지 않음 (위 "Antigravity 로그인" 참고)
 - agy가 제한 시간을 넘김
 - agy가 오류를 냄 (예: 백엔드 503)
 - PATH에 agy가 없음
@@ -95,6 +114,7 @@ Flash High는 답변마다 생각하는 데 10초쯤 더 걸렸고, 이 작업�
 
 - `AGY_READABLE_MODEL`, `AGY_READABLE_TIMEOUT`, `AGY_READABLE_NOTES`
 - `AGY_READABLE_AGY`: agy 경로
+- `AGY_READABLE_BROWSER`: 로그인 페이지를 여는 명령 (`none`이면 링크만 표시)
 - `AGY_READABLE_MIN_CHARS` (300), `AGY_READABLE_MAX_CHARS` (6000)
 - `AGY_READABLE_DAEMON=0`: 답변마다 일회성 `agy -p`를 실행하고, 백그라운드에 아무것도 남기지 않음
 - `AGY_READABLE_SPARES` (1), `AGY_READABLE_IDLE_EXIT` (1800초), `AGY_READABLE_HEDGE_AFTER` (8초), `AGY_READABLE_STUCK_AFTER` (20초)
@@ -106,7 +126,8 @@ Flash High는 답변마다 생각하는 데 10초쯤 더 걸렸고, 이 작업�
 Claude Code는 플러그인의 `bin/`을 Bash 도구의 PATH에 넣습니다. 그래서 세션 안에서 바로 쓸 수 있습니다. 셸에서는 전체 경로로 실행하세요.
 
 ```
-agy-readable status    # 설정, agy, 데몬, 최근 답변 10개의 결과
+agy-readable status    # 설정, agy, 로그인 상태, 데몬, 최근 답변 10개의 결과
+agy-readable login     # agy 로그인 (터미널에서는 코드도 직접 물어봄)
 agy-readable log 50    # 훅 로그 마지막 50줄
 agy-readable stop      # 데몬과 대기 중인 agy 종료 (다음 답변 때 다시 켜짐)
 ```

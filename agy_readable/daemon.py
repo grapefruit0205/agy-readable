@@ -13,13 +13,23 @@ The first answer wins and every worker involved is shut down.
 Protocol: one JSON line each way over a unix socket.
   {"op": "ask", "prompt": str, "timeout": s, "model": str} -> {"ok": true, "text": str, "warm": bool, ...}
                                                              | {"ok": false, "error": str, "timed_out": bool}
-  {"op": "ping"} -> {"ok": true, "pid": int, "model": str, "spares": [...]}
+  {"op": "ping"} -> {"ok": true, "pid": int, "model": str, "auth_required": bool, "spares": [...]}
+  {"op": "login_start", "auto": bool} -> {"ok": true, "url": str, "fresh": bool, "left": s} | {"ok": true, "already": true}
+                                        | {"ok": false, "cooldown": true} | {"ok": false, "error": str}
+  {"op": "login_code", "code": str} -> {"ok": true} | {"ok": false, "error": "no_attempt"|"expired"|str, "pending": bool}
   {"op": "stop"} -> {"ok": true}
+
+Signing in: agy signs in with the OAuth token Antigravity keeps in the OS keyring. Without one, a stream-json
+agy just fails ("authentication required"), so the daemon notes that and, when asked, runs a one-shot
+`agy -p` with a pseudo-terminal as stdin: agy then prints a Google sign-in URL and waits 60 s for the code
+the sign-in page shows. The hook shows the URL, and the code the user pastes into Claude Code's prompt is
+written to that terminal. agy itself exchanges the code and stores the token; the daemon never sees a token.
 """
 import hashlib
 import json
 import os
 import queue
+import re
 import signal
 import socket
 import subprocess
@@ -27,7 +37,7 @@ import sys
 import threading
 import time
 
-from agy_readable import config
+from agy_readable import __version__, config
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPARE_MAX_AGE = 1200  # replace a spare that has waited this long; agy's sign-in token lives about an hour
@@ -35,6 +45,11 @@ BACKOFF = [5, 15, 60, 300]  # seconds before respawning after consecutive spare 
 MAX_STARTING = 3  # cap on spares starting at once while hedging against stuck ones
 HEDGE_MIN_LEFT = 8  # don't add a worker that has less time than this to answer
 MAX_RACERS = 3  # workers one request may use in total
+AUTH_ERROR = re.compile(r"authenticat", re.I)  # agy: "authentication required" / "authentication failed or timed out"
+AUTH_RECHECK = 60  # while signed out, try a spare this often, in case the user signed in some other way
+LOGIN_WINDOW = 60  # agy waits this long for the sign-in code (fixed in agy)
+LOGIN_COOLDOWN = 600  # an answer opens the sign-in page on its own at most this often
+SIGNIN_URL = re.compile(r"https://accounts\.google\.com/\S+")
 
 
 def sock_path():
@@ -68,23 +83,28 @@ def call(msg, timeout):
 
 
 def ensure_running(wait=0.0):
-    """Start the daemon if its socket does not answer; optionally wait until it does. Returns True if reachable."""
+    """Start the daemon if its socket does not answer, or replace one left running by another version of
+    the plugin (after an update the data directory, and so the socket, stays the same); optionally wait
+    until it answers. Returns True if reachable."""
     deadline = time.time() + wait
-    spawned = False
+    last_spawn = 0.0
     while True:
         try:
-            with socket.socket(socket.AF_UNIX) as s:
-                s.connect(sock_path())
-            return True
-        except OSError:
+            version = call({"op": "ping"}, 2).get("version")
+            if version == __version__:
+                return True
+            if not last_spawn:
+                log(replacing=version or "0.1.0", by=__version__)
+                call({"op": "stop"}, 2)
+        except (OSError, ValueError):
             pass
-        if not spawned:
+        if time.time() - last_spawn > 1.0:  # again if a new daemon lost the lock to one still shutting down
             # own session + no inherited stdio: the hook must not wait on (or kill) the daemon
             env = dict(os.environ, PYTHONPATH=ROOT + os.pathsep + os.environ.get("PYTHONPATH", ""))
             subprocess.Popen([sys.executable, "-m", "agy_readable.daemon"], cwd=ROOT, env=env,
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                              start_new_session=True)
-            spawned = True
+            last_spawn = time.time()
         if time.time() >= deadline:
             return False
         time.sleep(0.05)
@@ -98,6 +118,7 @@ class Worker:
         os.makedirs(cwd, exist_ok=True)
         self.born = time.time()
         self.ready_at = None
+        self.early_error = None  # why agy gave up before it was ready, e.g. not signed in
         self.usage = {}
         self.events = queue.Queue()
         self.p = subprocess.Popen(
@@ -116,6 +137,8 @@ class Worker:
             if ev.get("event") == "init" and self.ready_at is None:
                 self.ready_at = time.time()
                 log(worker=self.p.pid, ready_after=round(self.ready_at - self.born, 1))
+            if ev.get("event") == "result" and self.ready_at is None:
+                self.early_error = ev.get("result", {}).get("error") or "agy 종료됨"
             self.events.put(ev)
         self.events.put(None)
 
@@ -131,9 +154,12 @@ class Worker:
                 break
             if ev is None or ev.get("event") == "result":
                 raise RuntimeError((ev or {}).get("result", {}).get("error") or "agy 종료됨")
-        self.p.stdin.write(json.dumps({"event": "user", "message": {"role": "user", "content": prompt}},
-                                      ensure_ascii=False) + "\n")
-        self.p.stdin.flush()
+        try:
+            self.p.stdin.write(json.dumps({"event": "user", "message": {"role": "user", "content": prompt}},
+                                          ensure_ascii=False) + "\n")
+            self.p.stdin.flush()
+        except OSError:
+            pass  # agy already exited; its last events below say why
         deadline = time.time() + timeout
         while True:
             try:
@@ -167,6 +193,104 @@ class Worker:
         threading.Thread(target=run, daemon=True).start()
 
 
+class Login:
+    """One sign-in attempt: `agy -p` with a pseudo-terminal as stdin, which is when agy offers its sign-in flow
+    (with a pipe it just fails). agy prints the sign-in URL on stderr and reads the code from the terminal."""
+
+    def __init__(self, model, on_signed_in):
+        import pty  # POSIX only, like the rest of the daemon
+        import termios
+
+        cwd = os.path.join(config.data_dir(), "agy_cwd")
+        os.makedirs(cwd, exist_ok=True)
+        self.on_signed_in = on_signed_in
+        self.started = time.time()
+        self.url = None
+        self.error = None
+        self.answered = False
+        self.code_sent = False
+        self.rc = None
+        self.changed = threading.Condition()
+        self.master, slave = pty.openpty()
+        attrs = termios.tcgetattr(slave)
+        attrs[3] &= ~termios.ECHO  # the code is not echoed back anywhere
+        termios.tcsetattr(slave, termios.TCSANOW, attrs)
+        try:
+            self.p = subprocess.Popen([config.AGY, "--model", model, "--disable-slash-commands", "-p", "ok"],
+                                      cwd=cwd, stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                      text=True, start_new_session=True)
+        except OSError:
+            os.close(self.master)
+            raise
+        finally:
+            os.close(slave)
+        for target, arg in ((self._read_err, self.p.stderr), (self._read_out, self.p.stdout), (self._drain, None)):
+            threading.Thread(target=target, args=(arg,) if arg else (), daemon=True).start()
+        threading.Thread(target=self._wait, daemon=True).start()
+
+    def _notify(self, **fields):
+        with self.changed:
+            for k, v in fields.items():
+                setattr(self, k, v)
+            self.changed.notify_all()
+
+    def _read_err(self, stream):
+        for line in stream:
+            m = SIGNIN_URL.search(line)
+            if m and not self.url:
+                self._notify(url=m.group(0))
+            elif line.startswith("Error:") and not self.error:
+                self._notify(error=line[len("Error:"):].strip())
+
+    def _read_out(self, stream):
+        for line in stream:
+            if line.strip():
+                self._notify(answered=True)  # agy got past sign-in and answered the prompt
+
+    def _drain(self):
+        while True:
+            try:
+                if not os.read(self.master, 4096):
+                    return
+            except OSError:
+                return
+
+    def _wait(self):
+        rc = self.p.wait()
+        self._notify(rc=rc)
+        try:
+            os.close(self.master)
+        except OSError:
+            pass
+        if rc == 0:
+            self.on_signed_in()
+
+    def state(self):
+        if self.rc is None and not self.answered:
+            if self.code_sent:
+                return "checking"
+            if not self.url:
+                return "starting"
+            return "waiting" if time.time() < self.started + LOGIN_WINDOW - 2 else "expired"
+        if self.rc in (None, 0):
+            return "ok"
+        return "expired" if self.error and "timed out" in self.error else "failed"
+
+    def wait_for(self, pred, timeout):
+        with self.changed:
+            self.changed.wait_for(pred, timeout)
+
+    def submit(self, code):
+        os.write(self.master, (code + "\r").encode())
+        self._notify(code_sent=True)
+
+    def kill(self):
+        try:
+            os.killpg(self.p.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
 class Daemon:
     def __init__(self):
         self.lock = threading.Lock()
@@ -177,6 +301,9 @@ class Daemon:
         self.next_spawn = 0.0
         self.last_used = time.time()
         self.stopping = threading.Event()
+        self.auth_required = False  # agy is not signed in to Antigravity
+        self.login = None
+        self.last_auto_login = 0.0
 
     def take(self):
         """The workers to send a request to: a ready spare, else the oldest starting one plus a fresh one."""
@@ -263,6 +390,9 @@ class Daemon:
                 winner, res = w, r
                 break
             failed.append(r)
+            if AUTH_ERROR.search(r.get("error", "")):  # another agy would fail the same way
+                self.signed_out()
+                break
             if len(failed) == len(racers):
                 if not can_add():
                     break
@@ -277,16 +407,80 @@ class Daemon:
             self.busy.difference_update(racers)
             if res["ok"]:
                 self.fails = 0
-            elif not res.get("timed_out"):
+                self.auth_required = False
+            elif not res.get("timed_out") and not self.auth_required:
                 self.fails += 1
         w = winner or racers[0]
-        res = dict(res, warm=warm, racers=len(racers), hedges=hedges,
+        res = dict(res, warm=warm, racers=len(racers), hedges=hedges, auth_required=self.auth_required,
                    worker_age=round(start - w.born, 1), seconds=round(time.time() - start, 1))
         # input_tokens stays flat from request to request because every worker starts a fresh conversation
         log(op="ask", worker=w.p.pid, model=self.model, **{k: v for k, v in res.items() if k != "text"},
             chars_out=len(res.get("text", "")), input_tokens=w.usage.get("input_tokens"),
             thinking_tokens=w.usage.get("thinking_tokens"), output_tokens=w.usage.get("output_tokens"))
         return res
+
+    def signed_out(self):
+        with self.lock:
+            if not self.auth_required:
+                log(auth_required=True)
+            self.auth_required = True
+            self.next_spawn = time.time() + AUTH_RECHECK
+
+    def signed_in(self):
+        with self.lock:
+            self.auth_required = False
+            self.fails = 0
+            self.next_spawn = 0.0  # start a spare right away
+
+    def login_start(self, auto):
+        """Start a sign-in attempt and return its URL. An answer (auto) reuses a pending attempt and opens
+        a new one at most every LOGIN_COOLDOWN; `agy-readable login` always starts over."""
+        with self.lock:
+            self.last_used = time.time()
+            cur = self.login
+            if cur and cur.state() == "waiting":
+                if auto:
+                    return {"ok": True, "url": cur.url, "fresh": False,
+                            "left": round(cur.started + LOGIN_WINDOW - time.time())}
+                cur.kill()
+            if auto and time.time() - self.last_auto_login < LOGIN_COOLDOWN:
+                return {"ok": False, "cooldown": True}
+            if auto:
+                self.last_auto_login = time.time()
+            try:
+                cur = self.login = Login(self.model, self.on_login_ok)
+            except OSError as e:
+                return {"ok": False, "error": f"agy 실행 실패 ({e.strerror})"}
+        cur.wait_for(lambda: cur.url or cur.rc is not None or cur.answered, 10)  # signed out: the URL comes at once
+        if cur.url:
+            log(login="started", auto=auto)
+            return {"ok": True, "url": cur.url, "fresh": True,
+                    "left": round(cur.started + LOGIN_WINDOW - time.time())}
+        if cur.error or cur.rc not in (None, 0):
+            return {"ok": False, "error": cur.error or f"agy 종료됨 (코드 {cur.rc})"}
+        self.signed_in()  # no sign-in prompt: agy is signed in and is answering the test prompt
+        return {"ok": True, "already": True}
+
+    def on_login_ok(self):
+        log(login="ok")
+        self.signed_in()
+
+    def login_code(self, code):
+        """Hand the code from the sign-in page to the waiting agy and wait for its verdict."""
+        self.last_used = time.time()
+        cur = self.login
+        state = cur.state() if cur else None
+        if state != "waiting":
+            return {"ok": False, "error": {"expired": "expired", "ok": "already", "checking": "checking"}.get(
+                state, "no_attempt")}
+        cur.submit(code)
+        cur.wait_for(lambda: cur.rc is not None or cur.error or cur.answered, 30)
+        if cur.error or cur.rc not in (None, 0):
+            log(login="failed", error=(cur.error or "")[:200])
+            return {"ok": False, "error": cur.error or f"agy 종료됨 (코드 {cur.rc})"}
+        if cur.rc == 0 or cur.answered:
+            return {"ok": True}
+        return {"ok": False, "error": "checking"}  # no verdict yet; on_login_ok follows if it succeeds
 
     def maintain(self):
         while not self.stopping.wait(1.0):
@@ -297,6 +491,12 @@ class Daemon:
                 for w in list(self.spares):
                     if not w.alive():
                         self.spares.remove(w)
+                        if w.early_error and AUTH_ERROR.search(w.early_error):
+                            if not self.auth_required:
+                                log(auth_required=True)
+                            self.auth_required = True
+                            self.next_spawn = now + AUTH_RECHECK
+                            continue
                         self.fails += 1
                         delay = BACKOFF[min(self.fails, len(BACKOFF)) - 1]
                         self.next_spawn = now + delay
@@ -307,6 +507,7 @@ class Daemon:
                         log(worker=w.p.pid, recycled=True)
                     elif w.ready_at:
                         self.fails = 0  # backend reachable again
+                        self.auth_required = False
                 ready = sorted((w for w in self.spares if w.ready_at), key=lambda w: w.born)
                 starting = [w for w in self.spares if not w.ready_at]
                 if len(ready) >= config.SPARES:  # hedges that lost the race, and any surplus, are let go
@@ -341,6 +542,8 @@ class Daemon:
         with self.lock:
             for w in self.spares + list(self.busy):
                 w.retire(grace=1.0)
+            if self.login:
+                self.login.kill()
         time.sleep(1.5)
         os._exit(0)
 
@@ -358,10 +561,16 @@ class Daemon:
                     res = self.handle_ask(msg)
                 elif msg.get("op") == "ping":
                     with self.lock:
-                        res = {"ok": True, "pid": os.getpid(), "model": self.model, "fails": self.fails,
-                               "busy": len(self.busy),
+                        res = {"ok": True, "pid": os.getpid(), "version": __version__, "model": self.model,
+                               "fails": self.fails,
+                               "busy": len(self.busy), "auth_required": self.auth_required,
+                               "login": self.login.state() if self.login else None,
                                "spares": [{"pid": w.p.pid, "ready": bool(w.ready_at), "age": round(time.time() - w.born, 1)}
                                           for w in self.spares]}
+                elif msg.get("op") == "login_start":
+                    res = self.login_start(bool(msg.get("auto")))
+                elif msg.get("op") == "login_code":
+                    res = self.login_code(str(msg.get("code", "")).strip())
                 elif msg.get("op") == "stop":
                     conn.sendall(b'{"ok": true}\n')
                     threading.Thread(target=self.stop).start()

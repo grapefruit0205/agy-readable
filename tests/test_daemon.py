@@ -1,17 +1,20 @@
 """The daemon with the fake agy: warm path, single-use workers, concurrency, timeouts, backend failures,
 hedging and lifecycle. The steps share one data directory and run in order."""
+import json
 import os
 import re
 import signal
+import socket
 import subprocess
 import sys
 import threading
 import time
 import unittest
+from unittest import mock
 
 from support import ROOT, SAMPLE, clean_env, event, new_data_dir, read_jsonl, remove, run_hook, stream, wait_until
 
-from agy_readable import daemon
+from agy_readable import __version__, daemon
 
 
 def marker(out):
@@ -218,6 +221,33 @@ class DaemonTest(unittest.TestCase):
         self.start(AGY_READABLE_IDLE_EXIT="3")
         self.assertTrue(wait_until(self.spare_ready))
         self.assertTrue(wait_until(lambda: self.ping() is None and not self.workers(), 10), self.workers())
+
+
+    def test_14_daemon_of_another_version_replaced(self):
+        # after a plugin update the socket is the same; a 0.1.0 daemon answers pings without a version
+        self.stop()
+        path, got = daemon.sock_path(), []
+        srv = socket.socket(socket.AF_UNIX)
+        srv.bind(path)
+        srv.listen(4)
+
+        def serve():
+            while True:
+                conn, _ = srv.accept()
+                with conn:
+                    op = json.loads(conn.recv(65536))["op"]
+                    got.append(op)
+                    conn.sendall(b'{"ok": true, "pid": 1}\n')
+                    if op == "stop":
+                        os.unlink(path)
+                        srv.close()
+                        return
+
+        threading.Thread(target=serve, daemon=True).start()
+        with mock.patch.dict(os.environ, self.env):  # the new daemon must run the fake agy
+            self.assertTrue(daemon.ensure_running(wait=10))
+        self.assertEqual(got, ["ping", "stop"])
+        self.assertEqual(self.ping()["version"], __version__)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,8 @@ Behaviour comes from FAKE_MODE, or from the file named by FAKE_MODE_FILE (re-rea
 import json
 import os
 import re
+import select
+import stat
 import sys
 import time
 
@@ -37,7 +39,54 @@ def emit(ev):
     print(json.dumps(ev, ensure_ascii=False), flush=True)
 
 
+# signing in, like agy: signed out unless FAKE_AUTH_FILE (when set) says "ok"
+AUTH = os.environ.get("FAKE_AUTH_FILE")
+GOOD_CODE = "4/0AgoodFakeCode" + "x" * 30
+
+
+def signed_in():
+    if not AUTH:
+        return True
+    with open(AUTH) as f:
+        return f.read().strip() == "ok"
+
+
+def err(text):
+    sys.stderr.write(text + "\n")
+    sys.stderr.flush()
+
+
+def sign_in_or_exit():
+    """Print mode: with a pipe as stdin agy gives up; otherwise it shows a URL and waits for the code."""
+    if stat.S_ISFIFO(os.fstat(0).st_mode):
+        err("Error: authentication required. Run 'agy' to log in, then retry.")
+        err("error: authentication failed or timed out")
+        sys.exit(1)
+    wait = float(os.environ.get("FAKE_LOGIN_WAIT", "60"))
+    err("Authentication required. Please visit the URL to log in:")
+    err(f"  https://accounts.google.com/o/oauth2/auth?client_id=fake&state={os.getpid()}")
+    err("")
+    err(f"Waiting for authentication (timeout {wait:g}s)...")
+    err("Or, paste the authorization code here and press Enter:")
+    ready, _, _ = select.select([sys.stdin], [], [], wait)
+    if not ready:
+        err("Error: authentication timed out.")
+        err("error: authentication failed or timed out")
+        sys.exit(1)
+    if sys.stdin.readline().strip() != GOOD_CODE:
+        err('Error: authentication failed: token exchange failed: oauth2: "invalid_grant" "Bad Request"')
+        err("error: authentication failed or timed out")
+        sys.exit(1)
+    with open(AUTH, "w") as f:
+        f.write("ok")
+
+
 if "--input-format" in sys.argv:
+    if not signed_in():
+        time.sleep(0.3)
+        err("Error: authentication required. Run 'agy' to log in, then retry.")
+        emit({"event": "result", "result": {"status": "ERROR", "error": "authentication failed or timed out"}})
+        sys.exit(1)
     if os.environ.get("FAKE_PIDS"):  # lets a test count only its own workers
         open(os.path.join(os.environ["FAKE_PIDS"], str(os.getpid())), "w").close()
     if mode() == "stuckonce":  # this process hangs before init, like agy stuck in a backend wait; later ones are fine
@@ -68,6 +117,8 @@ if "--input-format" in sys.argv:
     sys.exit(0)
 
 prompt = sys.argv[sys.argv.index("-p") + 1]
+if not signed_in():
+    sign_in_or_exit()
 body = body_of(prompt)
 record(body)
 m = mode()

@@ -17,12 +17,13 @@ import subprocess
 import sys
 import time
 
-from agy_readable import config, daemon
+from agy_readable import config, daemon, login
 
 PROMPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_ko.txt")
 PART_WAIT = 3.0  # how long the final flush waits for earlier flushes still writing their part
 STALE = 3600  # leftover state from aborted messages is removed after this many seconds
 
+SIGNED_OUT = "Antigravity 로그인 필요"
 FENCE = re.compile(r"```[^\n]*\n(.*?)```", re.S)
 HANGUL = re.compile(r"[가-힣]")
 
@@ -112,17 +113,22 @@ def one_shot(prompt, timeout):
     cwd = os.path.join(config.data_dir(), "agy_cwd")  # empty, so agy has no files to pick up as context
     os.makedirs(cwd, exist_ok=True)
     try:
+        # stdin is a closed pipe: signed out, agy then fails at once instead of waiting 60 s for a sign-in code
         p = subprocess.Popen([config.AGY, "--model", config.MODEL, "--disable-slash-commands", "-p", prompt],
-                             cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              text=True, start_new_session=True)
     except OSError as e:
         return None, f"agy 실행 실패 ({e.strerror})"
+    p.stdin.close()
+    p.stdin = None
     try:
         out, err = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         os.killpg(p.pid, signal.SIGKILL)  # agy may leave helpers behind; take the whole group down
         p.communicate()
         return None, over_budget()
+    if p.returncode != 0 and "authentication required" in err:
+        return None, SIGNED_OUT
     if p.returncode != 0 or not out.strip():
         log(agy_rc=p.returncode, agy_err=err[-300:])
         return None, f"agy 오류 (종료 코드 {p.returncode})"
@@ -139,6 +145,8 @@ def ask_agy(prompt):
             how = ("warm" if r.get("warm") else "cold") + ("+hedge" if r.get("hedges") else "")
             if r.get("ok"):
                 return r["text"], None, how
+            if r.get("auth_required"):
+                return None, SIGNED_OUT, how
             return None, over_budget() if r.get("timed_out") else r.get("error"), how
         except (OSError, ValueError) as e:
             log(daemon_error=repr(e)[-200:])
@@ -182,6 +190,11 @@ def finish(event, full, n_missing):
         seconds=seconds, via=how, outcome="refined" if refined else "fallback", reason=why, parts_missing=n_missing)
     if refined:
         return refined
+    if why == SIGNED_OUT:  # the one note shown even with notes off: without it the plugin never works
+        r = login.start(auto=True)
+        log(login_offer=True, fresh=r.get("fresh"), opened=r.get("opened"), cooldown=r.get("cooldown"),
+            error=r.get("error"))
+        return full.rstrip() + f"\n\n_(agy-readable: {login.note(r)})_\n"
     return full.rstrip() + (f"\n\n_(다듬기 생략: {why} · 원문 표시)_\n" if config.NOTES else "\n")
 
 
