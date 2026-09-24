@@ -2,6 +2,7 @@
 the code pasted into the prompt, wrong and late codes, /agy-readable:login and `agy-readable login`."""
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -60,6 +61,13 @@ class LoginTest(unittest.TestCase):
         with open(self.opened) as f:
             return f.read().split()
 
+    def assertOpened(self, text):
+        """The sign-in URL shown in `text` was opened in the browser, once. The browser is started without
+        waiting for it, so the fake one may write a little after the hook returns."""
+        url = re.search(r"https://accounts\.google\.com/[^\s)]+", text).group(0)
+        wait_until(lambda: url in self.opened_urls(), 5)
+        self.assertEqual(self.opened_urls().count(url), 1, (url, self.opened_urls()))
+
     def prompt(self, text, **env):
         r = subprocess.run(["sh", os.path.join(ROOT, "hooks", "run"), "prompt"],
                            input=json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": text}),
@@ -78,6 +86,7 @@ class LoginTest(unittest.TestCase):
         self.assertIn("브라우저에 Google 로그인 페이지를 열었습니다", out)
         self.assertIn("](https://accounts.google.com/", out)
         self.assertLess(took, 12)
+        self.assertOpened(out)
         self.assertEqual(len(self.opened_urls()), 1)
         p = self.ping()
         self.assertTrue(p["auth_required"])
@@ -98,7 +107,7 @@ class LoginTest(unittest.TestCase):
         self.assertEqual(r["decision"], "block")
         self.assertIn("코드가 맞지 않거나", r["reason"])
         self.assertIn("https://accounts.google.com/", r["reason"])
-        self.assertEqual(len(self.opened_urls()), 2)
+        self.assertOpened(r["reason"])
         self.assertNotIn(BAD, self.read("hook.log"))
 
     def test_05_good_code_signs_in(self):
@@ -157,7 +166,6 @@ class LoginTest(unittest.TestCase):
         # no URL within the daemon's 10 s wait: agy may just be slow to start, so it is not "already signed in"
         self.stop()
         self.set_auth("no")
-        before = len(self.opened_urls())
         subprocess.Popen([sys.executable, "-m", "agy_readable.daemon"], cwd=ROOT,
                          env=dict(self.env, PYTHONPATH=ROOT, FAKE_LOGIN_DELAY="12"), stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
@@ -168,7 +176,7 @@ class LoginTest(unittest.TestCase):
         time.sleep(2.5)
         r = self.prompt("/agy-readable:login")  # the same attempt, now with its URL: shown once, browser opened
         self.assertIn("https://accounts.google.com/", r["reason"])
-        self.assertEqual(len(self.opened_urls()), before + 1)
+        self.assertOpened(r["reason"])
         with open(self.auth) as f:
             self.assertEqual(f.read(), "no")
 
