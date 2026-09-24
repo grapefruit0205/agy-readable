@@ -9,6 +9,12 @@ Numbers stay in the text, since the sentences are written around them. They are 
 every number of the original, with its sign, as often as it appears there, and nothing more. List
 numbering is left out, as it may become bullets.
 
+Paths and URLs may contain Korean (~/문서/설정.json). Korean writes particles right after a word, so where a
+path ends is not always clear: a particle after an English name or an extension ("README를", "설정.json에")
+is left to the sentence, but after a Korean name ("~/문서에") it cannot be told from the name, and the path is
+kept with it. Protecting a particle too costs a little wording; leaving part of a path to the model could
+change it unnoticed.
+
 What this cannot catch: two values of the same kind trading places ("A is 10, B is 20" -> "A is 20, B is 10"),
 or a sentence whose meaning shifts without any number, code or path changing.
 """
@@ -20,9 +26,12 @@ TOKEN_RE = re.compile(r"⟦(\d+)⟧")
 FENCED = re.compile(r"(?ms)^([ \t]*)(`{3,}|~{3,})[^\n]*\n.*?(?:^[ \t]*\2[`~]*[ \t]*$|\Z)")
 INLINE_CODE = re.compile(r"(`+)(?:(?!\1)[^\n])+\1")
 MD_LINK = re.compile(r"!?\[[^\]\n]*\]\([^)\s]+(?:\s+\"[^\"\n]*\")?\)|<https?://[^>\s]+>")
-URL = re.compile(r"https?://[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+")
-PATH = re.compile(r"(?<![\w/.~\-:])((?:~|\.{1,2})?/[A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)*/?"
-                  r"|[A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)+/?)")
+URL = re.compile(r"https?://[\w\-.~:/?#\[\]@!$&'()*+,;=%]+")  # \w: letters of any script, so Korean too
+PATH = re.compile(r"(?<![\w/.~\-:])((?:~|\.{1,2})?/[\w.\-]+(?:/[\w.\-]+)*/?|[\w.\-]+(?:/[\w.\-]+)+/?)")
+# a Korean particle or ending right after an English letter or a closing bracket: "README를", "app.conf에서"
+PARTICLE = re.compile(r"(?<=[A-Za-z)\]])(?:이|가|을|를|은|는|의|에|에게|께|로|으로|와|과|도|만|나|이나|랑|이랑|하고|까지|부터|"
+                      r"처럼|보다|라는|이라는|라고|이라고|이고|이며|이다|입니다|이에요|예요|인데|이면|이지만|이라|인|이죠)"
+                      r"(?:는|도|만|서|요|의)?$")
 NUMBER = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)*")
 LIST_NUMBER = re.compile(r"(?m)^[ \t]*(?:[-*+][ \t]+)?\d+[.)][ \t]")
 
@@ -43,17 +52,34 @@ class Span:
 def _is_path(s):
     if s.startswith(("/", "~/", "./", "../")):
         return True
-    # relative: a/b/c, or a/b.ext; not "A/B", "TCP/IP", "1/2" or "and/or"
-    return s.count("/") >= 2 or re.search(r"\.[A-Za-z][A-Za-z0-9]{0,7}/?$", s) is not None
+    if re.search(r"\.[A-Za-z][A-Za-z0-9]{0,7}/?$", s):  # a/b.ext
+        return True
+    # a/b/c; not "A/B", "TCP/IP", "1/2", "and/or", nor Korean word lists like "빌드/테스트/배포"
+    return s.count("/") >= 2 and re.search(r"[A-Za-z0-9]", s) is not None
+
+
+def _path_end(p):
+    """Leave a trailing period or comma, and a particle after an English name, to the sentence."""
+    while True:
+        before = p
+        p = PARTICLE.sub("", p)
+        while p.endswith((".", ",")) and not p.endswith(("/.", "..")):
+            p = p[:-1]
+        if p == before:
+            return p
 
 
 def _url_end(url):
-    """Leave trailing punctuation (and an unbalanced closing bracket) to the sentence."""
-    while url and url[-1] in ".,;:!?'\"":
-        url = url[:-1]
-    while url and url[-1] in ")]" and url.count(url[-1]) > url.count("(" if url[-1] == ")" else "["):
-        url = url[:-1]
-    return url
+    """Leave trailing punctuation, an unbalanced closing bracket and a particle after it to the sentence."""
+    while True:
+        before = url
+        url = PARTICLE.sub("", url)
+        while url and url[-1] in ".,;:!?'\"":
+            url = url[:-1]
+        while url and url[-1] in ")]" and url.count(url[-1]) > url.count("(" if url[-1] == ")" else "["):
+            url = url[:-1]
+        if url == before:
+            return url
 
 
 def mask(text):
@@ -79,9 +105,7 @@ def mask(text):
         return keep(u) + m.group(0)[len(u):]
 
     def path(m):
-        p = m.group(0)
-        while p.endswith((".", ",")) and not p.endswith(("/.", "..")):  # the sentence's period, not the path's
-            p = p[:-1]
+        p = _path_end(m.group(0))
         return keep(p) + m.group(0)[len(p):] if _is_path(p) else m.group(0)
 
     text = URL.sub(url, text)

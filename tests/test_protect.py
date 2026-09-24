@@ -164,6 +164,58 @@ class AllowTest(unittest.TestCase):
         self.assertIn("\n  ```sh\n  make\n  ```", out)
 
 
+class KoreanPathTest(unittest.TestCase):
+    """Paths and URLs with Korean in them, and Korean particles written right after them."""
+
+    def protects(self, text, expected, masked):
+        got, spans = protect.mask(text)
+        self.assertEqual([s.text for s in spans], expected)
+        self.assertEqual(got, masked)
+        self.assertEqual(protect.restore(text, got, spans, got), (text.strip(), None))
+
+    def test_korean_path(self):
+        self.protects("설정은 /home/user/문서/설정.json 에 있습니다.",
+                      ["/home/user/문서/설정.json"], "설정은 ⟦0⟧ 에 있습니다.")
+
+    def test_particle_after_an_extension_stays_in_the_sentence(self):
+        self.protects("설정은 /home/user/문서/설정.json에 있고 ~/.bashrc에서 불러옵니다.",
+                      ["/home/user/문서/설정.json", "~/.bashrc"], "설정은 ⟦0⟧에 있고 ⟦1⟧에서 불러옵니다.")
+
+    def test_particle_after_an_english_name_stays_in_the_sentence(self):
+        self.protects("자세한 설명은 /usr/share/doc/README를 보세요.",
+                      ["/usr/share/doc/README"], "자세한 설명은 ⟦0⟧를 보세요.")
+
+    def test_particle_after_a_korean_name_is_kept_with_the_path(self):
+        # "문서에" could be a folder of that name: better to freeze the particle than expose part of a path
+        self.protects("결과는 ~/문서에 저장했습니다.", ["~/문서에"], "결과는 ⟦0⟧ 저장했습니다.")
+        self.protects("사진은 /data/회의 폴더에 있습니다.", ["/data/회의"], "사진은 ⟦0⟧ 폴더에 있습니다.")
+
+    def test_korean_relative_path(self):
+        self.protects("보고서는 docs/회의록/9월.md 에 있고, 초안은 문서/초안.txt에서 봅니다.",
+                      ["docs/회의록/9월.md", "문서/초안.txt"], "보고서는 ⟦0⟧ 에 있고, 초안은 ⟦1⟧에서 봅니다.")
+
+    def test_korean_url(self):
+        self.protects("자세한 내용은 https://ko.wikipedia.org/wiki/정규_표현식 을 보세요.",
+                      ["https://ko.wikipedia.org/wiki/정규_표현식"], "자세한 내용은 ⟦0⟧ 을 보세요.")
+        self.protects("파일은 https://example.com/docs에서 받고, 설명(https://example.com/a)을 보세요.",
+                      ["https://example.com/docs", "https://example.com/a"], "파일은 ⟦0⟧에서 받고, 설명(⟦1⟧)을 보세요.")
+
+    def test_korean_word_lists_are_not_paths(self):
+        text = "순서는 빌드/테스트/배포이고, 입력/출력과 읽기/쓰기, 및/또는 은 그대로 둡니다."
+        self.assertEqual(protect.mask(text), (text, []))
+
+    def test_korean_path_changed_is_rejected(self):
+        text = "설정은 /home/user/문서/설정.json 에 있습니다."
+        out, why = rewrite(text, lambda m: m.replace("⟦0⟧", "/home/user/문서/config.json"))
+        self.assertIsNone(out)
+        self.assertIn("코드·링크·경로 일부가 빠짐", why)
+
+    def test_invented_korean_path_is_rejected(self):
+        out, why = rewrite("결과는 문서 폴더에 저장했습니다.", lambda m: "결과는 ~/문서 에 저장했습니다.")
+        self.assertIsNone(out)
+        self.assertIn("원문에 없는 코드·링크·경로가 생김: ~/문서", why)
+
+
 class KnownLimitTest(unittest.TestCase):
     def test_same_kind_values_trading_places_pass(self):
         # a multiset of numbers cannot tell "A is 10, B is 20" from "A is 20, B is 10"; documented in README

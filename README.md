@@ -53,7 +53,7 @@ If a piece of the answer never reaches the hook (Claude Code runs up to three di
 
 A rewrite is shown only if it passes all of these; otherwise you see the original with a note.
 
-- **Code, links, URLs and file paths are never sent to agy.** Fenced code blocks, inline code, Markdown links, bare URLs and file paths (`/etc/app.conf`, `~/notes.md`, `src/app/main.py`) are replaced by placeholders such as `⟦0⟧` before the answer goes to agy. The rewrite must carry every placeholder exactly once, a code block's alone on its line and code blocks in their original order. The originals are then put back byte for byte, so these parts cannot change; inline ones may move within the text.
+- **Code, links, URLs and file paths are never sent to agy.** Fenced code blocks, inline code, Markdown links, bare URLs and file paths (`/etc/app.conf`, `~/notes.md`, `src/app/main.py`) are replaced by placeholders such as `⟦0⟧` before the answer goes to agy. The rewrite must carry every placeholder exactly once, a code block's alone on its line and code blocks in their original order. The originals are then put back byte for byte, so these parts cannot change; inline ones may move within the text. Paths and URLs may contain Korean (`~/문서/설정.json`). A particle written right after an English name or an extension (`README를`, `설정.json에`) stays in the sentence; after a Korean name (`~/문서에`) it cannot be told from the name, so it is protected along with the path.
 - **Numbers** stay in the text, since the sentences are written around them. Every number of the original must come back with its sign and as often as it appeared: `-3` becoming `3`, or one of two `3`s going missing, fails. No number may be added, including a Korean number word turned into digits (세 가지 → 3가지). Dropping a thousands separator (1,024 → 1024) and turning list numbering into bullets are fine.
 - **Nothing invented**: no new code block, and no inline code, link, URL or path that is not in the original. Backticks around a word already in the text are fine.
 - **Length**: the prose, placeholders left out, stays between half and twice the original.
@@ -62,9 +62,10 @@ A rewrite is shown only if it passes all of these; otherwise you see the origina
 What the checks cannot catch:
 
 - two values of the same kind trading places: "A is 10, B is 20" → "A is 20, B is 10" has the same numbers;
-- a sentence whose meaning shifts while every number, code, link and path stays the same.
+- a sentence whose meaning shifts while every number, code, link and path stays the same;
+- a relative path with one slash and no extension (`docs/README`, `docs/초안`): it looks like `TCP/IP` or `입력/출력`, so it stays in the text, where only its numbers are checked.
 
-The prompt forbids both, but nothing verifies it. When the exact wording matters, Claude's original is in `/export` and the transcript. On 2026-09-24, 9 real Claude answers rewritten twice each passed the checks 18 times out of 18.
+The prompt forbids changing any of these, but nothing verifies it. When the exact wording matters, Claude's original is in `/export` and the transcript. On 2026-09-24, 9 real Claude answers rewritten twice each passed the checks 18 times out of 18.
 
 ## How it works
 

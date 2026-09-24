@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.1 — 2026-09-24
+
+- Paths and URLs with Korean in them are protected whole. 0.3.0 stopped at the first Korean character: in `/home/user/문서/설정.json` only `/home/user/` was protected, and the rest could change unnoticed.
+- A Korean particle right after an English name or an extension (`README를`, `설정.json에서`) is left to the sentence; after a Korean name (`~/문서에`) it is protected with the path, as the two cannot be told apart.
+- Korean word lists with slashes (`빌드/테스트/배포`, `입력/출력`) are not taken for paths.
+
 ## 0.3.0 — 2026-09-24
 
 Fixes from a review of 0.2.0.
