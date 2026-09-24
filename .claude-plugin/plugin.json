@@ -1,0 +1,39 @@
+{
+  "name": "agy-readable",
+  "displayName": "agy-readable",
+  "version": "0.1.0",
+  "description": "Rewrite Claude's hard-to-read Korean answers into plain Korean with agy (Antigravity CLI), on your own Antigravity sign-in. Code, numbers, paths and links are checked to come through unchanged; otherwise the original is shown.",
+  "author": {
+    "name": "Junseok Pak",
+    "url": "https://github.com/grapefruit0205"
+  },
+  "homepage": "https://github.com/grapefruit0205/agy-readable",
+  "repository": "https://github.com/grapefruit0205/agy-readable",
+  "license": "MIT",
+  "keywords": ["korean", "readability", "antigravity", "agy", "gemini", "message-display", "hooks"],
+  "userConfig": {
+    "model": {
+      "type": "string",
+      "title": "agy model",
+      "description": "Model agy rewrites with (`agy models` lists them). High thinks about 10 s longer per answer for no visible gain on this task.",
+      "default": "gemini-3.8-flash-low",
+      "required": false
+    },
+    "timeout": {
+      "type": "number",
+      "title": "Timeout (seconds)",
+      "description": "How long to wait for agy before showing the original answer instead.",
+      "default": 40,
+      "min": 10,
+      "max": 110,
+      "required": false
+    },
+    "notes": {
+      "type": "boolean",
+      "title": "Show skip notes",
+      "description": "Add one line under an answer shown unrewritten, saying why (timeout, agy error, a number that changed).",
+      "default": true,
+      "required": false
+    }
+  }
+}

@@ -1,0 +1,11 @@
+#!/bin/sh
+# Run the agy-readable hook with a Python 3.8+ this machine has. Without one, pass the answer
+# through untouched: this hook hides streamed lines, so failing here must never hide an answer.
+root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+for candidate in python3 python; do
+  if $candidate -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' >/dev/null 2>&1; then
+    PYTHONPATH="$root${PYTHONPATH:+:$PYTHONPATH}" exec $candidate -m agy_readable.hook "$@"
+  fi
+done
+cat >/dev/null
+exit 0

@@ -1,0 +1,17 @@
+{
+  "name": "agy-readable",
+  "owner": {
+    "name": "Junseok Pak",
+    "url": "https://github.com/grapefruit0205"
+  },
+  "description": "Plain-Korean rewrites of Claude Code answers, by agy (Antigravity CLI).",
+  "plugins": [
+    {
+      "name": "agy-readable",
+      "displayName": "agy-readable",
+      "description": "Rewrite Claude's hard-to-read Korean answers into plain Korean with agy, keeping code, numbers, paths and links unchanged.",
+      "category": "productivity",
+      "source": "./"
+    }
+  ]
+}

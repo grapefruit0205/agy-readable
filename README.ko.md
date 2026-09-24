@@ -1,0 +1,142 @@
+# agy-readable
+
+[English](README.md) · **한국어**
+
+**Claude의 한국어 답변을 한눈에 읽히는 한국어로 바꿔 줍니다.** Claude Code의 한국어 답변은 읽기 어려울 때가 많습니다. 문장이 길고, 번역투이고, 요점이 중간에 묻힙니다. agy-readable은 Claude Code 플러그인입니다. 답변이 끝나면 [agy](https://antigravity.google/)(Antigravity CLI)의 Gemini 3.8 Flash에 넘겨, 짧고 구조가 분명한 한국어로 다시 쓰게 합니다.
+
+다시 쓴 답을 보여 주기 전에 확인하는 것이 있습니다. 코드, 숫자, 경로, 링크 주소가 하나도 바뀌지 않았는지입니다. 하나라도 바뀌었거나 agy가 느리거나 실패하면, Claude가 쓴 원문을 그대로 보여 주고 이유를 한 줄 붙입니다.
+
+바뀌는 것은 화면에 보이는 글뿐입니다. Claude가 기억하는 대화와 다음 턴의 맥락은 원문 그대로입니다.
+
+## 필요한 것
+
+- Claude Code **2.1.280 이상** (`MessageDisplay` 훅). 터미널과 데스크톱 앱 모두 됩니다.
+- **Linux 또는 macOS**. Windows는 지원하지 않습니다(보조 프로세스가 유닉스 소켓을 씁니다). Windows에서는 훅이 아무것도 하지 않아 답변이 그대로 보입니다.
+- `python3` 또는 `python`으로 실행되는 **Python 3.8 이상**
+- **agy 설치와 본인 Antigravity 계정 로그인**. 터미널에서 `agy -p "hello"`가 답하면 됩니다.
+  - agy는 헤드리스로 동작합니다. Antigravity가 OS 키링에 저장해 둔 OAuth 토큰으로 로그인합니다.
+  - agy-readable은 PATH에 있는 `agy`를 실행할 뿐입니다. 인증 정보를 읽거나 복사하거나 저장하지 않고, 플러그인에 들어 있는 인증 정보도 없습니다.
+  - 그래서 설치한 사람마다 자기 로그인과 자기 할당량으로 돌아갑니다.
+
+## 설치
+
+```
+claude plugin marketplace add grapefruit0205/agy-readable
+claude plugin install agy-readable@agy-readable
+```
+
+Claude Code 안에서는 `/plugin marketplace add grapefruit0205/agy-readable` 다음에 `/plugin install agy-readable@agy-readable`을 입력합니다. 설치 후 새 세션을 시작하세요.
+
+- 업데이트: `claude plugin marketplace update agy-readable` 다음에 `claude plugin update agy-readable@agy-readable`
+- 잠시 끄기: `claude plugin disable agy-readable@agy-readable`
+- 제거: `claude plugin uninstall agy-readable@agy-readable`
+
+## 화면에서 보이는 것
+
+Claude가 답을 쓰는 동안에는 답변이 보이지 않습니다. 다 쓰고 나면 다시 쓴 답변이 한 번에 나타납니다.
+
+다음 답변은 손대지 않고 Claude가 쓴 그대로 보여 줍니다.
+
+- 300자보다 짧거나 6,000자보다 긴 답변
+- 한국어가 없는 답변
+- 대부분이 코드인 답변 (코드 블록이 60%를 넘는 경우)
+
+다시 쓴 답을 쓰지 않을 때는 원문 아래에 `_(다듬기 생략: agy 응답이 40초를 넘음 · 원문 표시)_` 같은 한 줄이 붙습니다. 이유는 다음 중 하나입니다.
+
+- agy가 제한 시간을 넘김
+- agy가 오류를 냄 (예: 백엔드 503)
+- PATH에 agy가 없음
+- 결과 길이가 원문의 절반보다 짧거나 두 배보다 김
+- 코드 블록, 인라인 코드, 링크 주소, 숫자 중 무언가가 바뀜 (무엇이 바뀌었는지 적어 줍니다)
+
+목록 번호가 글머리 기호로 바뀌는 것은 허용합니다.
+
+## 동작 방식
+
+```
+Claude가 답변을 스트리밍 ──► 훅 (hooks/run → agy_readable/hook.py)
+   중간 전송마다: 새 줄을 저장하고 화면에는 아무것도 표시하지 않음
+   마지막 전송: 줄을 합침 ──► 데몬 (유닉스 소켓) ──► 미리 띄워 둔 agy (stream-json 모드)
+                                                   agy 프로세스 하나가 답변 하나만 처리하고 종료
+   코드·숫자·링크·길이 확인 ──► 다시 쓴 답변, 또는 원문 + 한 줄 설명
+```
+
+- **데몬을 쓰는 이유.** agy는 시작할 때 로그인, 할당량 확인, 대화 준비에 5~10초가 걸립니다. 백엔드가 느리면 30~60초도 걸립니다. 작은 백그라운드 프로세스(`python3 -m agy_readable.daemon`)가 agy 하나를 미리 띄워 두므로, 다시 쓰는 데는 모델이 답하는 시간만 듭니다.
+  - 데몬이 꺼져 있으면 답변의 첫 전송 때 켜집니다.
+  - 30분 동안 쓰이지 않으면 대기 중인 agy와 함께 종료됩니다.
+- **맥락이 쌓이지 않습니다.** agy 프로세스 하나는 답변 하나만 다시 쓰고 종료됩니다. 그래서 앞 답변의 내용이 다음 답변에 섞이지 않습니다. 하나를 쓰면 바로 새 것을 띄웁니다.
+- **백엔드 지연 대비.** agy 백엔드는 가끔 프로세스 하나만 30~60초 멈추게 하고, 다른 프로세스는 멀쩡합니다. 그래서 요청을 다른 agy에도 보냅니다.
+  - 약 8초 안에 답이 없을 때 (긴 답변은 더 기다림), 또는 agy가 실패했을 때 하나를 더 씁니다. 답변 하나에 최대 셋까지입니다.
+  - 대기 중인 agy가 20초가 지나도 준비되지 않으면 옆에 하나를 더 띄웁니다.
+  - 가장 먼저 온 답을 쓰고 나머지는 종료합니다.
+- **데몬에 연결할 수 없으면** 훅이 일회성 `agy -p`를 대신 실행합니다.
+
+2026-09-24에 Gemini 3.8 Flash Low로 500~2,000자 답변을 재 본 결과입니다. Claude의 답변이 끝난 뒤 다시 쓴 답변이 나오기까지의 시간입니다.
+
+| 경우 | 걸린 시간 |
+|---|---|
+| 미리 띄운 agy가 있을 때 | 3~6초 (가끔 11초) |
+| 일회성 `agy -p` | 10~11초 |
+| 백엔드 지연 중 | 60초 이상 |
+
+Flash High는 답변마다 생각하는 데 10초쯤 더 걸렸고, 이 작업에서는 눈에 띄는 차이가 없었습니다. 그래서 기본값은 Low입니다.
+
+## 설정
+
+설치할 때, 또는 나중에 `/plugin` → agy-readable → configure에서 바꿉니다.
+
+| 옵션 | 기본값 | 설명 |
+|---|---|---|
+| `model` | `gemini-3.8-flash-low` | 다시 쓸 때 쓰는 모델. `agy models`로 목록을 봅니다. |
+| `timeout` | `40` | agy를 기다리는 시간(초). 넘으면 원문을 보여 줍니다. |
+| `notes` | `true` | 원문을 보여 줄 때 붙는 한 줄 설명 |
+
+환경 변수가 위 설정보다 우선합니다. 환경 변수로만 바꿀 수 있는 것도 있습니다.
+
+- `AGY_READABLE_MODEL`, `AGY_READABLE_TIMEOUT`, `AGY_READABLE_NOTES`
+- `AGY_READABLE_AGY`: agy 경로
+- `AGY_READABLE_MIN_CHARS` (300), `AGY_READABLE_MAX_CHARS` (6000)
+- `AGY_READABLE_DAEMON=0`: 답변마다 일회성 `agy -p`를 실행하고, 백그라운드에 아무것도 남기지 않음
+- `AGY_READABLE_SPARES` (1), `AGY_READABLE_IDLE_EXIT` (1800초), `AGY_READABLE_HEDGE_AFTER` (8초), `AGY_READABLE_STUCK_AFTER` (20초)
+
+다시 쓰기 지시문은 [`agy_readable/prompt_ko.txt`](agy_readable/prompt_ko.txt)에 있습니다.
+
+## 상태 확인
+
+Claude Code는 플러그인의 `bin/`을 Bash 도구의 PATH에 넣습니다. 그래서 세션 안에서 바로 쓸 수 있습니다. 셸에서는 전체 경로로 실행하세요.
+
+```
+agy-readable status    # 설정, agy, 데몬, 최근 답변 10개의 결과
+agy-readable log 50    # 훅 로그 마지막 50줄
+agy-readable stop      # 데몬과 대기 중인 agy 종료 (다음 답변 때 다시 켜짐)
+```
+
+로그와 임시 파일은 플러그인 데이터 폴더(`~/.claude/plugins/data/agy-readable-agy-readable/`)에 있습니다.
+
+- `hook.log`, `daemon.log`: 길이, 시간, 결과, 토큰 수만 적습니다. 답변 자체는 적지 않습니다. 단, "바뀜" 설명에는 바뀐 코드나 숫자가 항목당 30자까지 들어갑니다.
+- `state/`: 아직 쓰는 중인 답변의 줄을 담고, 답변이 끝나면 지웁니다. 중간에 끊긴 답변의 파일은 한 시간 뒤에 지웁니다.
+
+## 비용과 개인정보
+
+- **답변이 Google로 전송됩니다.** 다시 쓰는 답변은 모두 agy를 거쳐 본인 Antigravity 계정으로 Google Gemini 서비스에 보내지고, 그 약관을 따릅니다. 이것이 허용되지 않는 환경에서는 설치하지 마세요.
+- **할당량.** agy가 자체 시스템 프롬프트를 붙이기 때문에, 한 번 다시 쓸 때 입력 토큰이 약 14,500개 + 답변 길이만큼 듭니다. 본인 Antigravity 할당량에서 나갑니다. 요청을 여러 agy에 보내면 2~3배가 듭니다.
+- 데몬이 켜져 있는 동안(마지막 답변 후 최대 30분) agy 프로세스 하나가 백그라운드에서 대기합니다.
+
+## 한계
+
+- Claude가 답을 쓰는 동안에는 아무것도 보이지 않습니다. 답변이 끝나야 나타납니다.
+- 한국어 전용입니다. 지시문과 검사가 한국어 답변에 맞춰져 있습니다.
+- Claude에 저장되는 답변은 바뀌지 않습니다. 답변 복사, `/export`, 대화 기록에는 원문이 들어갑니다.
+- agy가 느리면 제한 시간(기본 40초)만큼 기다린 뒤에 원문이 나옵니다.
+
+## 개발
+
+```
+python3 -m unittest discover -s tests -v
+```
+
+테스트는 Claude Code와 같은 방식으로 훅을 실행합니다(`sh hooks/run`, 이벤트 JSON을 stdin으로). agy 대신 `tests/fakebin`의 가짜 agy를 쓰므로 agy 설치나 로그인이 필요 없습니다.
+
+## 라이선스
+
+MIT

@@ -1,0 +1,16 @@
+{
+  "description": "agy-readable: hide Claude's answer while it streams, then show it rewritten into plainer Korean by agy (Antigravity CLI). If agy is slow or fails, the original answer is shown with a one-line note.",
+  "hooks": {
+    "MessageDisplay": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"${CLAUDE_PLUGIN_ROOT}/hooks/run\"; [ -f \"$f\" ] || { cat >/dev/null; exit 0; }; sh \"$f\"; exit 0",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}
