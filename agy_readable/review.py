@@ -27,6 +27,7 @@ PREFIX = re.compile(r"(?:#{1,6}\s+|>\s*)?(?:[-*+]\s+|\d+[.)]\s+)?")
 # a sentence ends at . ? ! (with closing ** " ) after it) before a space; not after one capital, as in "Q. ..."
 SENT = re.compile(r".+?(?:(?<!\b[A-Z])[.?!][*_\"'”’)\]]*(?=\s)|[.?!][*_\"'”’)\]]*$|$)")
 SKIP = re.compile(r"^\s*(?:⟦\d+⟧\s*)?$|^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$")  # blank, a lone placeholder, |---|
+LONE = re.compile(r"^\s*⟦\d+⟧\s*$")  # a line that is only a placeholder: where a code block stands
 BARE = re.compile(r"^(?:#{1,6}|>|[-*+]|\d+[.)])?$")  # what is left of a line whose sentences were all deleted
 RULE = r"[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*"  # a horizontal rule
 EDIT = re.compile(r"^\s*\[(\d+)(\+?)\]\s?(.*)$")
@@ -168,7 +169,15 @@ def build(original, masked, draft):
         return None, lines, us, 0
     with open(PROMPT, encoding="utf-8") as f:
         base = f.read()
-    numbered = "\n".join(f"[{n}] {lines[i][s:e].strip()}" for n, (i, s, e) in enumerate(us, 1))
+    # code blocks go in unnumbered, where they stand, or agy takes them for missing and adds them again
+    numbered, k = [], 0
+    for i, line in enumerate(lines):
+        while k < len(us) and us[k][0] == i:
+            numbered.append(f"[{k + 1}] {line[us[k][1]:us[k][2]].strip()}")
+            k += 1
+        if LONE.match(line):
+            numbered.append(line.strip())
+    numbered = "\n".join(numbered)
     prompt = (base + "[원문]\n" + masked + "\n\n[다시 쓴 글]\n" + numbered + "\n\n[의심 목록]\n"
               + "\n".join(listed) + "\n")
     return prompt, lines, us, len(listed)
@@ -189,6 +198,7 @@ def apply(lines, us, answer):
             continue
         edits.append((n, plus, text))
     was = [bool(x.strip()) for x in lines]
+    present = {x.strip() for x in lines if LONE.match(x)}
     lines = list(lines)
     after = collections.defaultdict(list)  # new lines after a heading or table row
     done = collections.Counter()
@@ -196,7 +206,15 @@ def apply(lines, us, answer):
     for n, plus, text in sorted(edits, key=lambda x: (us[x[0] - 1][0], us[x[0] - 1][1], x[1]), reverse=True):
         i, s, e = us[n - 1]
         whole = lines[i][s:e].lstrip()[:1] in ("#", "|") and e == len(lines[i])
-        if plus:
+        if plus and LONE.match(text):
+            if text in present:  # a code block the rewrite already has
+                continue
+            done["넣음"] += 1
+            while whole and i + 1 < len(lines) and lines[i + 1].lstrip().startswith("|"):
+                i += 1
+            # on its own line, or the check takes it for code moved into a sentence
+            after[i][:0] = ["", text] + ([""] if i + 1 < len(lines) and lines[i + 1].strip() else [])
+        elif plus:
             done["넣음"] += 1
             if whole and lines[i].lstrip().startswith("|") and not text.startswith("|"):
                 while i + 1 < len(lines) and lines[i + 1].lstrip().startswith("|"):

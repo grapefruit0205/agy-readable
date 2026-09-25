@@ -4,6 +4,8 @@ Before an answer goes to agy, fenced code blocks, inline code, Markdown links, U
 replaced by placeholders (⟦0⟧, ⟦1⟧, ...). The rewritten text must carry every placeholder; a code block's
 exactly once, alone on its line and in the original order, while an inline one may appear again (a summary
 at the top may name the same file). They are then put back byte for byte, so these parts cannot change.
+A ⟦n⟧ already in the answer (one explaining this plugin, say) is protected the same way, so it cannot be
+taken for a placeholder.
 
 Numbers stay in the text, since the sentences are written around them. Every number of the original, with
 its sign, must appear at least as often as it does there, and no other number may appear; a summary may
@@ -27,6 +29,8 @@ from collections import Counter
 
 TOKEN = "⟦{}⟧"
 TOKEN_RE = re.compile(r"⟦(\d+)⟧")
+ASIDE = "\ue000{}\ue001"  # a ⟦n⟧ of the answer's own, set aside while the placeholders are made
+ASIDE_RE = re.compile("\ue000(\\d+)\ue001")
 FENCED = re.compile(r"(?ms)^([ \t]*)(`{3,}|~{3,})[^\n]*\n.*?(?:^[ \t]*\2[`~]*[ \t]*$|\Z)")
 INLINE_CODE = re.compile(r"(`+)(?:(?!\1)[^\n])+\1")
 MD_LINK = re.compile(r"!?\[[^\]\n]*\]\([^)\s]+(?:\s+\"[^\"\n]*\")?\)|<https?://[^>\s]+>")
@@ -92,13 +96,19 @@ def _url_end(url):
 
 
 def mask(text):
-    """Returns (text with placeholders, spans), or (None, None) if the text already has ⟦n⟧ in it."""
-    if TOKEN_RE.search(text):
-        return None, None
-    spans = []
+    """Returns (text with placeholders, spans)."""
+    spans, own = [], []
+
+    def aside(m):
+        own.append(m.group(0))
+        return ASIDE.format(len(own) - 1)
+
+    # the answer's own ⟦n⟧ are set aside first, put back inside any code or link that holds them,
+    # and protected themselves where they stand in the prose
+    text = TOKEN_RE.sub(aside, text)
 
     def keep(original, block=False):
-        spans.append(Span(original, block))
+        spans.append(Span(ASIDE_RE.sub(lambda m: own[int(m.group(1))], original), block))
         return TOKEN.format(len(spans) - 1)
 
     def fenced(m):
@@ -119,6 +129,7 @@ def mask(text):
 
     text = URL.sub(url, text)
     text = PATH.sub(path, text)
+    text = ASIDE_RE.sub(lambda m: keep(own[int(m.group(1))]), text)
     return text, spans
 
 
@@ -194,7 +205,11 @@ def restore(original, masked, spans, out):
     if invented:
         return None, "원문에 없는 코드·링크·경로가 생김: " + _short(invented)
 
-    for i in blocks:  # the whole line, so the block keeps its own indentation
-        out = re.sub(r"(?m)^[ \t]*" + re.escape(TOKEN.format(i)) + r"[ \t]*$", lambda m, s=spans[int(i)]: s.text, out)
-    out = TOKEN_RE.sub(lambda m: spans[int(m.group(1))].text, out)
-    return out, None
+    def put_back(m):  # a code block takes its whole line, so it keeps its own indentation
+        i = int(m.group(1) or m.group(2))
+        if m.group(1) and spans[i].block:
+            return spans[i].text
+        return m.group(0).replace(TOKEN.format(i), spans[i].text)
+
+    # one pass, so a ⟦n⟧ inside what was put back (the answer's own) is left as it is
+    return re.sub(r"(?m)^[ \t]*⟦(\d+)⟧[ \t]*$|⟦(\d+)⟧", put_back, out), None

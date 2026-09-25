@@ -80,7 +80,7 @@ A rewrite is shown only if it passes all of these. A missing number, placeholder
 - **Marks of certainty**: `추정`, `확인된 사실`, `확인한 사실` and `일반적인` must appear at least as often as in the original, so that a guess is not turned into a fact.
 - **Nothing invented**: no new code block, and no inline code, link, URL or path that is not in the original. Backticks around a word already in the text are fine.
 - **Length**: the prose, placeholders left out, stays between half and twice the original.
-- An answer that already contains `⟦n⟧` is not rewritten, as the placeholders could not be told apart.
+- A `⟦n⟧` already in the answer (one about this plugin, say) is protected like code, so it is never taken for a placeholder.
 
 What the checks cannot catch:
 

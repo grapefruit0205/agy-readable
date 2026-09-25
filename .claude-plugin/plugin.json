@@ -1,7 +1,7 @@
 {
   "name": "agy-readable",
   "displayName": "agy-readable",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Rebuild Claude's hard-to-read Korean answers into plain, clearly structured Korean with agy (Antigravity CLI), on your own Antigravity sign-in, then have agy check the rewrite against the original and fix what it added. Code, numbers, paths, links and marks such as 추정 are checked to come through; otherwise the original is shown.",
   "author": {
     "name": "Junseok Pak",

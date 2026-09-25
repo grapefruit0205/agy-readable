@@ -65,6 +65,23 @@ class ApplyTest(unittest.TestCase):
         self.assertEqual(out, "| 가 | 나 |\n|---|---|\n| 1 | 2 |\n\n넣은 문장입니다.\n\n끝입니다.")
         self.assertEqual(done, {"넣음": 1})
 
+    def test_code_blocks_already_there_are_not_added_again(self):
+        draft = "설명입니다.\n\n⟦0⟧\n\n끝입니다."
+        out, done, _ = fix(draft, "[1+] ⟦0⟧")
+        self.assertEqual((out, done), (draft, {}))
+
+    def test_a_missing_code_block_goes_on_its_own_line(self):
+        out, done, _ = fix("설명입니다. 둘째입니다.\n\n끝입니다.", "[1+] ⟦0⟧")
+        self.assertEqual(out, "설명입니다. 둘째입니다.\n\n⟦0⟧\n\n끝입니다.")
+        self.assertEqual(done, {"넣음": 1})
+
+    def test_the_prompt_shows_code_blocks_where_they_stand(self):
+        masked = "명령은 이렇습니다.\n\n⟦0⟧\n\n새 세션을 여세요."
+        draft = "명령은 이렇습니다.\n\n⟦0⟧\n\n**새 세션**을 반드시 여세요. 끝."
+        prompt, *_ = review.build(masked, masked, draft)
+        rewritten = prompt.split("\n[다시 쓴 글]\n", 1)[1].split("\n\n[의심 목록]\n", 1)[0]
+        self.assertEqual(rewritten, "[1] 명령은 이렇습니다.\n⟦0⟧\n[2] **새 세션**을 반드시 여세요.\n[3] 끝.")
+
     def test_lines_it_cannot_read(self):
         _, done, bad = fix("한 문장입니다.", "설명입니다\n[9] 없는 번호\n없음")
         self.assertEqual((done, bad), ({}, ["설명입니다", "[9] 없는 번호"]))

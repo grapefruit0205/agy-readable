@@ -74,8 +74,16 @@ class MaskTest(unittest.TestCase):
         self.assertEqual(protect.numbers("gemini-3.8 모델, 3-5개, (-3), x=-2"),
                          {"3.8": 1, "3": 1, "5": 1, "-3": 1, "-2": 1})
 
-    def test_text_with_placeholder_syntax_is_not_masked(self):
-        self.assertEqual(protect.mask("이미 ⟦1⟧ 이 있음"), (None, None))
+    def test_placeholder_syntax_of_its_own_is_protected(self):
+        text = "검사가 `[7+] ⟦0⟧` 처럼 답하면, ⟦3⟧ 과 ⟦0⟧ 을 다시 넣은 것입니다.\n\n```\n[23+] ⟦1⟧\n```\n"
+        masked, spans = protect.mask(text)
+        self.assertEqual(masked, "검사가 ⟦1⟧ 처럼 답하면, ⟦2⟧ 과 ⟦3⟧ 을 다시 넣은 것입니다.\n\n⟦0⟧\n")
+        self.assertEqual([s.text for s in spans], ["```\n[23+] ⟦1⟧\n```", "`[7+] ⟦0⟧`", "⟦3⟧", "⟦0⟧"])
+        out, why = rewrite(text, lambda m: m.replace("답하면, ", "답하면 "))
+        self.assertIsNone(why)
+        self.assertEqual(out, text.replace("답하면, ", "답하면 ").rstrip("\n"))
+        out, why = rewrite(text, lambda m: m.replace("⟦3⟧ 을", "을"))
+        self.assertEqual(why, "코드·링크·경로 일부가 빠짐: ⟦0⟧")
 
     def test_unclosed_fence_is_one_block(self):
         text = "설명입니다.\n```sh\nmake all\n"

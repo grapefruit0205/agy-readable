@@ -240,8 +240,6 @@ def rewrite(text, msg=""):
     times, while the time left is enough for another attempt as slow as the last; all requests share
     config.TIMEOUT. When agy itself fails there is no retry here: the daemon has already raced other workers."""
     masked, spans = protect.mask(text)
-    if masked is None:
-        return None, "원문에 ⟦숫자⟧ 표기가 있어 보호할 수 없음", None, 0, None, []
     with open(PROMPT, encoding="utf-8") as f:
         base = f.read()
     start, hows, rejected, note, stages = time.time(), [], [], None, []

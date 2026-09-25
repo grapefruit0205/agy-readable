@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.1 — 2026-09-25
+
+- An answer that already has `⟦n⟧` in it (one explaining this plugin, say) is rewritten too. Until now it was shown as it was, with `원문에 ⟦숫자⟧ 표기가 있어 보호할 수 없음`. Such a `⟦n⟧` is now protected like code: set aside before the placeholders are made, put back inside any code that holds it, and given a placeholder of its own in prose. Placeholders are put back in one pass, so a `⟦n⟧` inside restored code is left as it is.
+- The second pass no longer adds a code block the rewrite already has. Its numbered rewrite left out lines holding only a placeholder, so agy took the answer's code blocks for missing and put them in again, and the doubled blocks failed the check (`고친 글이 검사에 걸림: 코드·링크·경로 자리 표시가 중복되거나 바뀜`); the first rewrite was shown, without the second pass's other fixes. Such lines now appear in place, unnumbered, the prompt says they are already there, and a code block the rewrite has is not inserted again. One that is really missing goes on its own line.
+
 ## 0.4.0 — 2026-09-25
 
 The point of the plugin is an answer you can read. Polishing sentence by sentence left most answers 92-99% unchanged, so the answer is now rebuilt freely (headings, a short summary, questions and answers), and a second request has agy check that rewrite against the original and fix what it added.
