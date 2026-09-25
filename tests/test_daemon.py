@@ -28,9 +28,11 @@ class DaemonTest(unittest.TestCase):
         cls.data = new_data_dir()
         cls.mode_file = os.path.join(cls.data, "mode.txt")
         cls.pids = os.path.join(cls.data, "pids")
+        cls.review_file = os.path.join(cls.data, "review.txt")
         os.makedirs(cls.pids)
+        # the second pass is off here (one request per answer) except where a test turns it on
         cls.env = clean_env(cls.data, FAKE_MODE_FILE=cls.mode_file, FAKE_PIDS=cls.pids, FAKE_STARTUP="1.5",
-                            FAKE_GEN="0.2")
+                            FAKE_GEN="0.2", AGY_READABLE_REVIEW="0", FAKE_REVIEW_FILE=cls.review_file)
         os.environ["CLAUDE_PLUGIN_DATA"] = cls.data  # so daemon.call / sock_path here reach the test daemon
         cls.set_mode("ok")
 
@@ -248,6 +250,35 @@ class DaemonTest(unittest.TestCase):
             self.assertTrue(daemon.ensure_running(wait=10))
         self.assertEqual(got, ["ping", "stop"])
         self.assertEqual(self.ping()["version"], __version__)
+
+    def test_15_rejected_rewrite_asked_again(self):
+        # the retry is a second request to the daemon, answered by another single-use worker
+        wait_until(self.spare_ready)
+        self.set_mode("dropnum,ok")
+        out, _ = self.ask()
+        self.assertIsNotNone(marker(out))
+        self.assertIn("1,024", out)
+        self.assertEqual((self.last_hook()["outcome"], self.last_hook()["retries"]), ("refined", 1))
+        asks = [e for e in self.daemon_log() if e.get("op") == "ask"][-2:]
+        self.assertTrue(all(e["ok"] for e in asks))
+        self.assertNotEqual(asks[0]["worker"], asks[1]["worker"])
+
+    def test_16_second_pass_is_another_request(self):
+        # the rewrite and its review each go to their own single-use worker
+        wait_until(self.spare_ready)
+        self.set_mode("ok")
+        with open(self.review_file, "w", encoding="utf-8") as f:
+            f.write("replace:캐시를 확인하고:캐시를 먼저 확인하고")
+        self.addCleanup(os.remove, self.review_file)
+        out, _ = self.ask(AGY_READABLE_REVIEW="1")
+        self.assertIsNotNone(marker(out))
+        self.assertIn("캐시를 먼저 확인하고", out)
+        entry = self.last_hook()
+        self.assertEqual((entry["outcome"], entry["review"]), ("refined", "고침 1"))
+        self.assertRegex(entry["via"], r"^warm,review:(warm|cold)")
+        asks = [e for e in self.daemon_log() if e.get("op") == "ask"][-2:]
+        self.assertTrue(all(e["ok"] for e in asks))
+        self.assertNotEqual(asks[0]["worker"], asks[1]["worker"])
 
 
 if __name__ == "__main__":

@@ -51,6 +51,21 @@ class MaskTest(unittest.TestCase):
         for kept_as_prose in ("A/B", "TCP/IP", "1/2"):
             self.assertFalse(any(kept_as_prose == t for t in texts), kept_as_prose)
 
+    def test_acronym_lists_are_prose(self):
+        text = "HTTP/HTTPS/TLS 차이를 설명합니다."
+        self.assertEqual(protect.mask(text)[1], [])
+        out, why = rewrite("HTTP, HTTPS, TLS 차이를 설명합니다.", lambda m: text)
+        self.assertIsNone(why)
+
+    def test_section_numbers_in_headings_are_structure(self):
+        original = "### 1장: 설계\n\n서버는 2대입니다.\n\n### 연결 유지: 3장의 핵심\n\n502가 줄었습니다."
+        out, why = rewrite(original, lambda m: "### 설계\n\n서버는 2대입니다.\n\n### 연결 유지\n\n502가 줄었습니다.")
+        self.assertIsNone(why)
+        out, why = rewrite("슬라이드 3장을 만들었습니다.", lambda m: "슬라이드를 만들었습니다.")
+        self.assertEqual(why, "숫자가 빠지거나 바뀜: 3")
+        out, why = rewrite("### 502 줄이기\n\n끝.", lambda m: "### 줄이기\n\n끝.")
+        self.assertEqual(why, "숫자가 빠지거나 바뀜: 502")
+
     def test_code_numbers_are_not_prose_numbers(self):
         masked, _ = protect.mask(RICH)
         self.assertEqual(protect.numbers(masked), {"1024": 1, "-3": 1, "1": 1, "2": 1})  # 1/2 ratio; list numbers left out
@@ -111,9 +126,17 @@ class RejectTest(unittest.TestCase):
         text = "먼저:\n```sh\nmake\n```\n다음:\n```sh\nmake install\n```\n"
         self.rejected(text, lambda m: "다음:\n⟦1⟧\n먼저:\n⟦0⟧", "코드 블록 순서가 바뀜")
 
-    def test_placeholder_repeated(self):
-        text = "`make`를 실행하세요. 설명이 조금 더 있습니다."
-        self.rejected(text, lambda m: m + " 다시 ⟦0⟧", "중복되거나 바뀜")
+    def test_code_block_repeated(self):
+        text = "예:\n```sh\nmake\n```\n이렇게 빌드합니다."
+        self.rejected(text, lambda m: m + "\n⟦0⟧", "중복되거나 바뀜")
+
+    def test_mark_of_certainty_dropped(self):
+        text = "CPU 가 잘 오르지 않습니다 (추정). 알람으로 늘었습니다 (확인된 사실)."
+        self.rejected(text, lambda m: "CPU 가 잘 오르지 않습니다. 알람으로 늘었습니다 (확인된 사실).", "단서가 빠짐: 추정")
+
+    def test_repeated_mark_dropped_once(self):
+        text = "A 는 느립니다 (추정). B 도 느립니다 (추정). 그래서 둘 다 고쳤습니다."
+        self.rejected(text, lambda m: "A 와 B 는 느립니다 (추정). 그래서 둘 다 고쳤습니다.", "단서가 빠짐: 추정")
 
     def test_unknown_placeholder(self):
         text = "`make`를 실행하세요. 설명이 조금 더 있습니다."
@@ -141,6 +164,14 @@ class AllowTest(unittest.TestCase):
 
     def test_list_numbering_to_bullets(self):
         self.allowed("순서:\n1. 빌드\n2. 배포\n", lambda m: m.replace("1. ", "- ").replace("2. ", "- "))
+
+    def test_summary_may_repeat_numbers_code_and_marks(self):
+        text = "`make`로 빌드하면 502가 2,023건에서 1건으로 줄었습니다 (확인된 사실). 설명이 조금 더 있습니다."
+        self.allowed(text, lambda m: "요약: ⟦0⟧, 502 2,023건 → 1건 (확인된 사실).\n\n" + m)
+
+    def test_heading_numbers_are_structure(self):
+        self.allowed("캐시를 고쳤습니다. 설명이 조금 더 있습니다.",
+                     lambda m: "## 1. 바뀐 점\n캐시를 고쳤습니다.\n\n## 2. 더 볼 것\n설명이 조금 더 있습니다.")
 
     def test_thousands_separator(self):
         self.allowed("크기는 1,024 KB입니다.", lambda m: "크기는 1024 KB입니다.")

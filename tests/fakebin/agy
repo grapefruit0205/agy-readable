@@ -26,6 +26,50 @@ def set_mode(m):
         f.write(m)
 
 
+def next_mode():
+    """The mode for this answer. "a,b,c" is a sequence: this answer takes a, the next ones b, then c."""
+    m = mode()
+    if "," in m:
+        m, rest = m.split(",", 1)
+        set_mode(rest)
+    return m
+
+
+def record_prompt(prompt):
+    """Every prompt, appended, so a test can see what each attempt was told."""
+    if os.environ.get("FAKE_PROMPTS"):
+        with open(os.environ["FAKE_PROMPTS"], "a", encoding="utf-8") as f:
+            f.write(prompt + "\n=====\n")
+
+
+def is_review(prompt):
+    return "\n[다시 쓴 글]\n" in prompt
+
+
+def review_mode():
+    """What the second pass does: the file named by FAKE_REVIEW_FILE (daemon workers keep the daemon's
+    environment), else FAKE_REVIEW."""
+    rf = os.environ.get("FAKE_REVIEW_FILE")
+    if rf and os.path.exists(rf):
+        with open(rf, encoding="utf-8") as f:
+            return f.read().strip()
+    return os.environ.get("FAKE_REVIEW", "")
+
+
+def review_answer(prompt):
+    """The second pass, as review_mode() says: "" = nothing to fix; "fail"; "sleep";
+    "replace:OLD:NEW" = every numbered sentence with OLD in it, sent back with OLD replaced by NEW."""
+    r = review_mode()
+    if r == "sleep":
+        time.sleep(100)
+    if r.startswith("replace:"):
+        _, old, new = r.split(":", 2)
+        rewritten = prompt.split("\n[다시 쓴 글]\n", 1)[1].split("\n\n[의심 목록]\n", 1)[0]
+        lines = [ln.replace(old, new) for ln in rewritten.splitlines() if ln.startswith("[") and old in ln]
+        return "\n".join(lines) or "없음"
+    return "없음"
+
+
 def body_of(prompt):
     return prompt.split("---\n", 1)[1] if "---\n" in prompt else prompt
 
@@ -103,9 +147,18 @@ if "--input-format" in sys.argv:
     for line in sys.stdin:
         prompt = json.loads(line)["message"]["content"]
         turn += 1
+        if is_review(prompt):
+            record_prompt(prompt)
+            if review_mode() == "fail":
+                emit({"event": "result", "result": {"status": "ERROR", "error": "UNAVAILABLE (code 503)"}})
+                sys.exit(1)
+            time.sleep(float(os.environ.get("FAKE_GEN", "0.2")))
+            emit({"event": "result", "result": {"status": "SUCCESS", "response": review_answer(prompt)}})
+            continue
         body = body_of(prompt)
         record(body)
-        m = mode()
+        record_prompt(prompt)
+        m = next_mode()
         if m in ("slowonce", "failonce"):  # only the first worker to get a message misbehaves
             set_mode("ok")
         if m in ("slowonce", "hang"):
@@ -114,6 +167,8 @@ if "--input-format" in sys.argv:
             emit({"event": "result", "result": {"status": "ERROR", "error": "UNAVAILABLE (code 503)"}})
             sys.exit(1)
         time.sleep(float(os.environ.get("FAKE_GEN", "0.2")))
+        if m == "dropnum":
+            body = body.replace("1,024", "천여")
         emit({"event": "result", "result": {"status": "SUCCESS", "usage": {"input_tokens": 14500},
                                             "response": f"[다듬음 pid={os.getpid()} turn={turn} model={MODEL}]".translate(DIGITS) + "\n" + body}})
     sys.exit(0)
@@ -121,9 +176,17 @@ if "--input-format" in sys.argv:
 prompt = sys.argv[sys.argv.index("-p") + 1]
 if not signed_in():
     sign_in_or_exit()
+if is_review(prompt):  # takes no mode, so a sequence in FAKE_MODE_FILE still counts only rewrites
+    record_prompt(prompt)
+    if review_mode() == "fail":
+        sys.stderr.write("boom\n")
+        sys.exit(1)
+    print(review_answer(prompt))
+    sys.exit(0)
 body = body_of(prompt)
 record(body)
-m = mode()
+record_prompt(prompt)
+m = next_mode()
 if m == "fail":
     sys.stderr.write("boom\n")
     sys.exit(1)
@@ -135,6 +198,8 @@ if m == "listbullets":
     body = re.sub(r"(?m)^\d+\. ", "- ", body)
 if m == "droptoken":
     body = body.replace("⟦0⟧", "", 1)
+if m == "addpath":  # a path the original never had
+    body = body.replace("캐시를 확인하고", "캐시를 cache/app/now 에서 확인하고")
 out = f"[다듬음 model={MODEL}]".translate(DIGITS) + "\n" + body
 if m == "fence":
     out = "```markdown\n" + out + "\n```"

@@ -11,7 +11,8 @@ and a request with no answer after HEDGE_AFTER (or whose workers all failed) is 
 The first answer wins and every worker involved is shut down.
 
 Protocol: one JSON line each way over a unix socket.
-  {"op": "ask", "prompt": str, "timeout": s, "model": str} -> {"ok": true, "text": str, "warm": bool, ...}
+  {"op": "ask", "prompt": str, "timeout": s, "model": str, "weight": n?} -> {"ok": true, "text": str, "warm": bool, ...}
+  ("weight": how many prompt characters' worth of time the answer should take; default the prompt's length)
                                                              | {"ok": false, "error": str, "timed_out": bool}
   {"op": "ping"} -> {"ok": true, "pid": int, "model": str, "auth_required": bool, "spares": [...]}
   {"op": "login_start", "auto": bool} -> {"ok": true, "url": str, "fresh": bool, "left": s} | {"ok": true, "already": true}
@@ -362,7 +363,8 @@ class Daemon:
         deadline = start + float(msg.get("timeout", config.TIMEOUT))
         prompt = msg["prompt"]
         self.use_model(msg.get("model"))
-        hedge_at = start + config.HEDGE_AFTER + len(prompt) / 400
+        # the caller knows how long its answer should take (a long rewrite, or a short list of fixes)
+        hedge_at = start + config.HEDGE_AFTER + float(msg.get("weight") or len(prompt)) / 400
         racers, failed, hedges, results = [], [], [], queue.Queue()
         winner, res = None, None
 

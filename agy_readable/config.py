@@ -19,14 +19,20 @@ def opt(key, default):
             try:
                 return type(default)(value)
             except ValueError:
-                pass
+                try:  # a whole-number option may arrive as "2.0"
+                    return type(default)(float(value))
+                except ValueError:
+                    pass
     return default
 
 
 AGY = opt("AGY", "agy")
-MODEL = opt("MODEL", "gemini-3.8-flash-low")  # `agy models` lists the choices; High thinks ~10 s longer per answer
-TIMEOUT = opt("TIMEOUT", 40.0)  # seconds before the original answer is shown instead
+MODEL = opt("MODEL", "gemini-3.8-flash-low")  # `agy models` lists the choices; High is 10-30 s slower per answer
+TIMEOUT = opt("TIMEOUT", 60.0)  # seconds for both passes, before the original answer is shown instead
 NOTES = opt("NOTES", True)  # one line under an answer shown unrewritten, saying why
+REVIEW = opt("REVIEW", True)  # second pass: agy checks its rewrite against the original and fixes what is off
+RETRIES = opt("RETRIES", 1)  # a rewrite the checks reject is asked for again, told what was wrong, this many times
+KEEP = opt("KEEP", 20)  # the last N originals and rewrites kept in <data dir>/samples for comparing; 0 = none
 MIN_CHARS = opt("MIN_CHARS", 300)
 MAX_CHARS = opt("MAX_CHARS", 6000)
 USE_DAEMON = opt("DAEMON", True)  # False: a one-shot `agy -p` per answer (slower, nothing left running)
@@ -50,6 +56,10 @@ def data_dir():
             os.path.join(p, "hook.log")) else 0
         return os.path.realpath(max(found, key=log_mtime))
     return os.path.realpath(os.path.join(os.path.expanduser("~"), ".agy-readable"))
+
+
+def samples_dir():
+    return os.path.join(data_dir(), "samples")
 
 
 def log(name, **fields):

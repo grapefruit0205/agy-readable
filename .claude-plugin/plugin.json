@@ -1,8 +1,8 @@
 {
   "name": "agy-readable",
   "displayName": "agy-readable",
-  "version": "0.3.1",
-  "description": "Rewrite Claude's hard-to-read Korean answers into plain Korean with agy (Antigravity CLI), on your own Antigravity sign-in. Code, numbers, paths and links are checked to come through unchanged; otherwise the original is shown.",
+  "version": "0.4.0",
+  "description": "Rebuild Claude's hard-to-read Korean answers into plain, clearly structured Korean with agy (Antigravity CLI), on your own Antigravity sign-in, then have agy check the rewrite against the original and fix what it added. Code, numbers, paths, links and marks such as 추정 are checked to come through; otherwise the original is shown.",
   "author": {
     "name": "Junseok Pak",
     "url": "https://github.com/grapefruit0205"
@@ -15,17 +15,24 @@
     "model": {
       "type": "string",
       "title": "agy model",
-      "description": "Model agy rewrites with (`agy models` lists them). High thinks about 10 s longer per answer for no visible gain on this task.",
+      "description": "Model agy rewrites and checks with (`agy models` lists them). High is too slow for two passes: polishing a 5,354-character answer took it 43.7 s against 13.8 s for Low.",
       "default": "gemini-3.8-flash-low",
       "required": false
     },
     "timeout": {
       "type": "number",
       "title": "Timeout (seconds)",
-      "description": "How long to wait for agy before showing the original answer instead.",
-      "default": 40,
+      "description": "How long to wait for agy, both passes together, before showing the original answer instead.",
+      "default": 60,
       "min": 10,
       "max": 110,
+      "required": false
+    },
+    "review": {
+      "type": "boolean",
+      "title": "Check the rewrite against the original",
+      "description": "Second pass: agy compares its rewrite with the original, sentence by sentence, and fixes what it added or changed. Off is faster but leaves those.",
+      "default": true,
       "required": false
     },
     "notes": {
@@ -33,6 +40,24 @@
       "title": "Show skip notes",
       "description": "Add one line under an answer shown unrewritten, saying why (timeout, agy error, a number that changed).",
       "default": true,
+      "required": false
+    },
+    "retries": {
+      "type": "number",
+      "title": "Retries after a failed check",
+      "description": "How many times a rewrite that fails a check is asked for again, told what was wrong, while the timeout leaves time for it. 0 shows the original at once.",
+      "default": 1,
+      "min": 0,
+      "max": 3,
+      "required": false
+    },
+    "keep": {
+      "type": "number",
+      "title": "Rewrites kept for comparing",
+      "description": "How many originals and rewrites to keep on this computer (plugin data dir, samples/, readable by you only) for `agy-readable samples` and `diff`. 0 keeps none.",
+      "default": 20,
+      "min": 0,
+      "max": 200,
       "required": false
     }
   }

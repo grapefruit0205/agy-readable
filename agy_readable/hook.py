@@ -5,8 +5,15 @@ Claude Code runs up to 3 flushes of one message at once, so each delta goes to i
 arrives, the answer is shown as it is, with a warning where the part is missing: those lines were already
 hidden while streaming, so leaving the gap unmarked would lose them silently.
 
-Code, links, URLs and paths never reach agy (see protect.py), and the rewrite is checked before it is
-shown. When agy is slow or fails, or the check fails, the original text is shown with a one-line note.
+Code, links, URLs and paths never reach agy (see protect.py). agy rewrites the answer freely (headings,
+a summary, questions and answers), then, in a second request, checks that rewrite against the original and
+fixes only the sentences that add or change something (see review.py). The result is checked before it is
+shown. If the second pass fails or its fixes break the checks, the first rewrite is shown when it passed
+them itself. A rewrite the checks reject is asked for once more, with what was wrong, while the time left
+allows it. When agy is slow or fails, or no attempt passes, the original text is shown with a one-line note.
+
+The last config.KEEP originals and rewrites (rejected ones too) are kept in <data dir>/samples, readable by
+the user only, for `agy-readable samples` and `agy-readable diff`. hook.log keeps outcomes, never text.
 
 agy runs through the daemon (agy_readable.daemon), which keeps a pre-started single-use agy waiting;
 the first flush of each message starts the daemon if it is down. If the daemon cannot be reached,
@@ -21,7 +28,7 @@ import subprocess
 import sys
 import time
 
-from agy_readable import config, daemon, login, protect
+from agy_readable import config, daemon, login, protect, review
 
 PROMPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_ko.txt")
 STALE = 3600  # leftover state from aborted messages is removed after this many seconds
@@ -30,6 +37,22 @@ GAP = ("\n\n> ⚠️ agy-readable: 이 자리에 있어야 할 답변 일부를 
 
 SIGNED_OUT = "Antigravity 로그인 필요"
 HANGUL = re.compile(r"[가-힣]")
+SEP = "---\n"  # ends the instructions in prompt_ko.txt; the answer follows it
+RETRY_MIN_LEFT = 8.0  # seconds; with less left, another attempt would only delay showing the original
+REVIEW_MIN_LEFT = 4.0  # seconds; with less left, the second pass is skipped
+# what the second pass can put back; any other failure of a rewrite means asking for a new one
+FIXABLE = ("숫자가 빠지거나", "원문에 없는 숫자", "코드·링크·경로 일부가 빠짐", "단서가 빠짐", "원문에 없는 코드·링크·경로가 생김")
+# what the next attempt is told, by the start of the reason protect.restore gave; first match wins
+RETRY_HINTS = [
+    ("숫자가 빠지거나", "원문의 숫자는 나온 자리마다 모두, 원문 표기 그대로 남겨라. "
+                    "숫자가 든 문장이나 표 칸을 합치거나 빼지 마라."),
+    ("단서가 빠짐", "'추정', '확인된 사실' 같은 단서는 그 내용이 나오는 곳마다 빠짐없이 붙여라."),
+    ("원문에 없는 숫자", "원문에 없는 숫자를 쓰지 마라. 한글로 쓴 수를 숫자로 바꾸지 말고, 번호를 새로 붙이지 마라."),
+    ("원문에 없는 코드", "원문에 없는 코드, 코드 블록, 링크, 경로를 만들지 마라."),
+    ("코드 블록", "혼자 한 줄에 있던 ⟦숫자⟧ 표시는 원래 순서대로, 계속 혼자 한 줄에 두어라."),
+    ("코드·링크·경로", "⟦숫자⟧ 표시를 하나도 빼거나 겹치지 말고 모두 한 번씩, 모양 그대로 남겨라."),
+    ("결과 길이", "원문 내용을 빼거나 늘리지 말고 다시 구성하라."),
+]
 
 
 def log(**fields):
@@ -134,13 +157,16 @@ def one_shot(prompt, timeout):
     return out, None
 
 
-def ask_agy(prompt):
-    """Returns (agy output or None, reason when None, how it ran)."""
+def ask_agy(prompt, budget=None, weight=None):
+    """Returns (agy output or None, reason when None, how it ran), within `budget` seconds (config.TIMEOUT).
+    `weight`: how long the answer should take, as the prompt length the daemon's hedging would expect for it
+    (it sends a request that takes much longer to one more agy); the prompt's own length when None."""
+    budget = config.TIMEOUT if budget is None else budget
     start = time.time()
     if config.USE_DAEMON and daemon.ensure_running(wait=2.0):
         try:
-            r = daemon.call({"op": "ask", "prompt": prompt, "model": config.MODEL,
-                             "timeout": config.TIMEOUT - (time.time() - start)}, config.TIMEOUT + 5)
+            r = daemon.call({"op": "ask", "prompt": prompt, "model": config.MODEL, "weight": weight,
+                             "timeout": budget - (time.time() - start)}, budget + 5)
             how = ("warm" if r.get("warm") else "cold") + ("+hedge" if r.get("hedges") else "")
             if r.get("ok"):
                 return r["text"], None, how
@@ -149,24 +175,111 @@ def ask_agy(prompt):
             return None, over_budget() if r.get("timed_out") else r.get("error"), how
         except (OSError, ValueError) as e:
             log(daemon_error=repr(e)[-200:])
-    left = config.TIMEOUT - (time.time() - start)
+    left = budget - (time.time() - start)
     if left < 5:
         return None, over_budget(), "oneshot"
     return (*one_shot(prompt, left), "oneshot")
 
 
-def rewrite(text):
-    """Returns (rewritten text or None, reason when None, how agy ran)."""
+def keep_sample(msg, outcome, attempt, before, after, reason=None, **extra):
+    """Keep one original and its rewrite; only the last config.KEEP files stay. A rejected rewrite is kept
+    as agy wrote it, placeholders and all, next to the masked original it was asked to rewrite. `extra`: the
+    first rewrite and the second pass's answer, masked, when there was one."""
+    if config.KEEP <= 0:
+        return
+    try:
+        d = config.samples_dir()
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        path = os.path.join(d, f"{int(time.time() * 1000)}-{msg or 'x'}-{attempt}-{outcome}.json")
+        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as f:
+            json.dump({"t": round(time.time(), 3), "msg": msg, "model": config.MODEL, "attempt": attempt,
+                       "outcome": outcome, "reason": reason, "masked": outcome != "refined",
+                       "before": before, "after": after, **extra}, f, ensure_ascii=False)
+        for old in sorted(os.listdir(d))[:-config.KEEP]:
+            os.remove(os.path.join(d, old))
+    except OSError as e:  # keeping a sample must never keep the answer off screen
+        log(sample_error=repr(e)[-200:])
+
+
+def with_feedback(base, why):
+    """The instructions, plus what the rejected attempt got wrong, before the separator the answer follows."""
+    hint = next((h for key, h in RETRY_HINTS if why.startswith(key)), "")
+    note = f"직전에 다듬은 글은 검사에서 걸려 버려졌다({why}). 처음부터 다시 다듬되 이 문제가 없게 하라. {hint}".rstrip()
+    head, sep, tail = base.rpartition(SEP)
+    return head + note + "\n" + sep + tail if sep else base + note + "\n"
+
+
+def second_pass(text, masked, spans, draft, budget):
+    """agy checks its rewrite `draft` (masked) against the original and fixes what is off (review.py).
+    Returns (the fixed text, restored, or None; what happened, for the log; how agy ran or None;
+    agy's answer, masked, or None)."""
+    prompt, lines, us, n = review.build(text, masked, draft)
+    if prompt is None:
+        return None, "후보 없음", None, None
+    out, why, how = ask_agy(prompt, budget, weight=len(masked) // 2)  # a long prompt, but only a few lines back
+    if out is None:
+        return None, f"실패: {why}", how, None
+    fixed, done, bad = review.apply(lines, us, protect.clean(out))
+    note = " · ".join(f"{k} {v}" for k, v in done.items()) or "고칠 것 없음"
+    if bad:
+        note += f" · 못 읽은 줄 {len(bad)}"
+    if not done:
+        return None, note, how, out
+    restored, why = protect.restore(text, masked, spans, fixed)
+    if restored is None:
+        return None, f"{note} · 고친 글이 검사에 걸림: {why}", how, out
+    return restored, note, how, out
+
+
+def rewrite(text, msg=""):
+    """Returns (rewritten text or None, reason when None, how agy ran, retries used, what the second pass did,
+    seconds each request took).
+
+    A rewrite goes to the second pass when it passed the checks, or failed only on what that pass can put
+    back (FIXABLE). One the checks still reject is asked for again, told what was wrong, up to config.RETRIES
+    times, while the time left is enough for another attempt as slow as the last; all requests share
+    config.TIMEOUT. When agy itself fails there is no retry here: the daemon has already raced other workers."""
     masked, spans = protect.mask(text)
     if masked is None:
-        return None, "원문에 ⟦숫자⟧ 표기가 있어 보호할 수 없음", None
+        return None, "원문에 ⟦숫자⟧ 표기가 있어 보호할 수 없음", None, 0, None, []
     with open(PROMPT, encoding="utf-8") as f:
-        prompt = f.read() + masked
-    out, why, how = ask_agy(prompt)
-    if out is None:
-        return None, why, how
-    refined, why = protect.restore(text, masked, spans, out)
-    return refined, why, how
+        base = f.read()
+    start, hows, rejected, note, stages = time.time(), [], [], None, []
+    left = lambda: config.TIMEOUT - (time.time() - start)  # noqa: E731
+    for attempt in range(max(0, config.RETRIES) + 1):
+        began = time.time()
+        prompt = with_feedback(base, rejected[-1]) if rejected else base
+        # a free rewrite takes about twice as long as the daemon's default expects for a prompt this size
+        out, why, how = ask_agy(prompt + masked, left(), weight=2 * len(prompt + masked))
+        hows.append(how)
+        stages.append(round(time.time() - began, 1))
+        if out is None:
+            break
+        draft, fixes = protect.clean(out), None
+        shown, why = protect.restore(text, masked, spans, draft)
+        if shown is not None or why.startswith(FIXABLE):
+            note = "꺼짐" if not config.REVIEW else "시간 부족" if left() < REVIEW_MIN_LEFT else None
+            if note is None:
+                t = time.time()
+                fixed, note, rhow, fixes = second_pass(text, masked, spans, draft, left())
+                if rhow:
+                    hows.append("review:" + rhow)
+                    stages.append(round(time.time() - t, 1))
+                if fixed is not None:
+                    shown, why = fixed, None
+        if shown is not None:
+            keep_sample(msg, "refined", attempt, text, shown, None, draft=draft, review=note, fixes=fixes)
+            return shown, None, ",".join(hows), attempt, note, stages
+        keep_sample(msg, "rejected", attempt, masked, draft, why, review=note, fixes=fixes)
+        rejected.append(why)
+        if left() < max(RETRY_MIN_LEFT, 1.2 * (time.time() - began)):
+            break
+    retries = len(rejected) - 1 if out is not None else len(rejected)
+    if not rejected or not retries or why == SIGNED_OUT:  # finish() offers the sign-in on SIGNED_OUT as is
+        return None, why, ",".join(hows), retries, note, stages
+    if why == rejected[0] and len(set(rejected)) == 1:
+        return None, f"{why} (다시 시도해도 같음)", ",".join(hows), retries, note, stages
+    return None, f"{rejected[0]} · 다시 시도: {why}", ",".join(hows), retries, note, stages
 
 
 def finish(event, full):
@@ -176,13 +289,15 @@ def finish(event, full):
             reason=reason)
         return full
     if not shutil.which(config.AGY):
-        why, refined, how, seconds = f"agy를 찾을 수 없음 ({config.AGY})", None, None, 0.0
+        why, refined, how, retries, note, stages = f"agy를 찾을 수 없음 ({config.AGY})", None, None, 0, None, []
+        seconds = 0.0
     else:
         start = time.time()
-        refined, why, how = rewrite(full)
+        refined, why, how, retries, note, stages = rewrite(full, event["message_id"][:8])
         seconds = round(time.time() - start, 1)
     log(msg=event["message_id"][:8], parts=event.get("index", 0) + 1, chars=len(full), out=len(refined or ""),
-        seconds=seconds, via=how, outcome="refined" if refined else "fallback", reason=why)
+        seconds=seconds, stages=stages, via=how, retries=retries, review=note,
+        outcome="refined" if refined else "fallback", reason=why)
     if refined:
         return refined
     if why == SIGNED_OUT:  # the one note shown even with notes off: without it the plugin never works

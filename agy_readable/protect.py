@@ -1,13 +1,16 @@
 """Keep what must not change out of the model's hands, and check what it has to handle.
 
 Before an answer goes to agy, fenced code blocks, inline code, Markdown links, URLs and file paths are
-replaced by placeholders (⟦0⟧, ⟦1⟧, ...). The rewritten text must carry every placeholder exactly once
-(a code block's alone on its line, code blocks in their original order); they are then put back byte for
-byte, so these parts cannot change at all.
+replaced by placeholders (⟦0⟧, ⟦1⟧, ...). The rewritten text must carry every placeholder; a code block's
+exactly once, alone on its line and in the original order, while an inline one may appear again (a summary
+at the top may name the same file). They are then put back byte for byte, so these parts cannot change.
 
-Numbers stay in the text, since the sentences are written around them. They are compared as a multiset:
-every number of the original, with its sign, as often as it appears there, and nothing more. List
-numbering is left out, as it may become bullets.
+Numbers stay in the text, since the sentences are written around them. Every number of the original, with
+its sign, must appear at least as often as it does there, and no other number may appear; a summary may
+repeat one. List and heading numbering is left out, as it may become bullets or new sections.
+
+Marks that say how sure a statement is ("추정", "확인된 사실", ...) are counted the same way: a rewrite must
+keep at least as many of each as the original has, so none can be dropped quietly.
 
 Paths and URLs may contain Korean (~/문서/설정.json). Korean writes particles right after a word, so where a
 path ends is not always clear: a particle after an English name or an extension ("README를", "설정.json에")
@@ -16,7 +19,8 @@ kept with it. Protecting a particle too costs a little wording; leaving part of 
 change it unnoticed.
 
 What this cannot catch: two values of the same kind trading places ("A is 10, B is 20" -> "A is 20, B is 10"),
-or a sentence whose meaning shifts without any number, code or path changing.
+a number dropped in one place while the same number stays elsewhere, or a sentence whose meaning shifts
+without any number, code, path or mark changing. The review step (review.py) looks for those.
 """
 import re
 from collections import Counter
@@ -33,7 +37,10 @@ PARTICLE = re.compile(r"(?<=[A-Za-z)\]])(?:이|가|을|를|은|는|의|에|에�
                       r"처럼|보다|라는|이라는|라고|이라고|이고|이며|이다|입니다|이에요|예요|인데|이면|이지만|이라|인|이죠)"
                       r"(?:는|도|만|서|요|의)?$")
 NUMBER = re.compile(r"\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)*")
-LIST_NUMBER = re.compile(r"(?m)^[ \t]*(?:[-*+][ \t]+)?\d+[.)][ \t]")
+LIST_NUMBER = re.compile(r"(?m)^[ \t]*(?:[-*+][ \t]+|#{1,6}[ \t]+)?\d+[.)][ \t]")
+HEADING = re.compile(r"(?m)^[ \t]*#{1,6}[ \t].*$")
+CHAPTER = re.compile(r"\d+(?=[ \t]?[장절])")  # "### 3장: 설계", in a heading: the original's own section numbers
+HEDGES = ("추정", "확인된 사실", "확인한 사실", "일반적인")  # how sure a statement is; see hedges()
 
 
 class Span:
@@ -54,7 +61,9 @@ def _is_path(s):
         return True
     if re.search(r"\.[A-Za-z][A-Za-z0-9]{0,7}/?$", s):  # a/b.ext
         return True
-    # a/b/c; not "A/B", "TCP/IP", "1/2", "and/or", nor Korean word lists like "빌드/테스트/배포"
+    # a/b/c; not "A/B", "TCP/IP", "1/2", "and/or", "HTTP/HTTPS/TLS", nor Korean word lists like "빌드/테스트/배포"
+    if re.fullmatch(r"[A-Z][A-Z0-9]*(?:/[A-Z][A-Z0-9]*)+", s):
+        return False
     return s.count("/") >= 2 and re.search(r"[A-Za-z0-9]", s) is not None
 
 
@@ -114,8 +123,10 @@ def mask(text):
 
 
 def numbers(text):
-    """Numbers outside placeholders and list numbering, with their sign; thousands separators dropped."""
-    prose = LIST_NUMBER.sub("", TOKEN_RE.sub(" ", text))
+    """Numbers outside placeholders, list numbering and section numbers in headings, with their sign;
+    thousands separators dropped. A free rewrite may regroup the sections, and their numbers with them."""
+    prose = HEADING.sub(lambda m: CHAPTER.sub("", m.group(0)), TOKEN_RE.sub(" ", text))
+    prose = LIST_NUMBER.sub("", prose)
     found = Counter()
     for m in NUMBER.finditer(prose):
         i = m.start()
@@ -124,16 +135,27 @@ def numbers(text):
     return found
 
 
+def hedges(text):
+    """How often each mark of certainty appears."""
+    return Counter({h: text.count(h) for h in HEDGES if h in text})
+
+
 def _short(items):
     return ", ".join(s if len(s) <= 30 else s[:30] + "…" for s in items[:3])
+
+
+def clean(out):
+    """The model's answer without surrounding blank lines, or the fence it wrapped the whole answer in."""
+    out = out.strip()
+    if out.startswith("```"):
+        out = re.sub(r"^```[^\n]*\n|\n?```$", "", out).strip()
+    return out
 
 
 def restore(original, masked, spans, out):
     """Check the model's rewrite of `masked` and put the protected parts back.
     Returns (text, None), or (None, why it cannot be shown)."""
-    out = out.strip()
-    if out.startswith("```"):  # the model wrapped its whole answer in a fence
-        out = re.sub(r"^```[^\n]*\n|\n?```$", "", out).strip()
+    out = clean(out)
     if "```" in out or "~~~" in out:
         return None, "원문에 없는 코드 블록이 생김"
 
@@ -142,9 +164,9 @@ def restore(original, masked, spans, out):
     missing = [spans[int(i)].text for i in ids if not seen[i]]
     if missing:
         return None, "코드·링크·경로 일부가 빠짐: " + _short(missing)
-    if any(seen[i] > 1 for i in ids) or set(seen) - set(ids):
-        return None, "코드·링크·경로 자리 표시가 중복되거나 바뀜"
     blocks = [i for i in ids if spans[int(i)].block]
+    if any(seen[i] > 1 for i in blocks) or set(seen) - set(ids):
+        return None, "코드·링크·경로 자리 표시가 중복되거나 바뀜"
     lines = {}
     for i in blocks:
         m = re.search(r"(?m)^[ \t]*" + re.escape(TOKEN.format(i)) + r"[ \t]*$", out)
@@ -161,8 +183,11 @@ def restore(original, masked, spans, out):
     had, has = numbers(masked), numbers(out)
     if had - has:
         return None, "숫자가 빠지거나 바뀜: " + _short(sorted((had - has).elements()))
-    if has - had:
-        return None, "원문에 없는 숫자가 생김: " + _short(sorted((has - had).elements()))
+    if set(has) - set(had):
+        return None, "원문에 없는 숫자가 생김: " + _short(sorted(set(has) - set(had)))
+    lost = hedges(masked) - hedges(out)
+    if lost:
+        return None, "단서가 빠짐: " + _short(sorted(lost))
 
     _, added = mask(TOKEN_RE.sub(" ", out))  # code, links, URLs or paths the model wrote itself
     invented = [s.text for s in added or [] if s.core() not in original]
