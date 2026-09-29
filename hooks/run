@@ -1,13 +1,18 @@
 #!/bin/sh
 # Run an agy-readable hook with a Python 3.8+ this machine has: `run` for MessageDisplay, `run prompt` for
 # UserPromptSubmit. Without Python, pass everything through untouched: this plugin hides streamed lines,
-# so failing here must never hide an answer or block a prompt.
+# so failing here must never hide an answer or block a prompt. On Windows this runs in Git Bash, where
+# `python3` may be the Microsoft Store stub (the version check fails on it) and `py` is the Python launcher;
+# PYTHONUTF8 keeps the JSON on stdin and stdout in UTF-8 there instead of the locale's code page.
+# `python -m` also finds the package in the working directory, for a Windows Python that cannot read
+# Git Bash's /c/... PYTHONPATH; nothing here depends on the working directory otherwise.
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd -- "$root" || { cat >/dev/null; exit 0; }
 module=agy_readable.hook
 [ "$1" = prompt ] && module=agy_readable.login
-for candidate in python3 python; do
+for candidate in python3 python py; do
   if $candidate -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' >/dev/null 2>&1; then
-    PYTHONPATH="$root${PYTHONPATH:+:$PYTHONPATH}" exec $candidate -m $module
+    PYTHONUTF8=1 PYTHONPATH="$root${PYTHONPATH:+:$PYTHONPATH}" exec $candidate -m $module
   fi
 done
 cat >/dev/null

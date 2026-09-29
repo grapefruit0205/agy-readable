@@ -7,15 +7,41 @@ import subprocess
 import sys
 import time
 import unittest
+from unittest import mock
 
-from support import ROOT, SAMPLE, clean_env, event, new_data_dir, remove, run_hook, wait_until
+from support import ROOT, SAMPLE, WINDOWS, clean_env, event, new_data_dir, remove, run_hook, wait_until
 
-from agy_readable import daemon
+from agy_readable import daemon, login, proc
 
 GOOD = "4/0AgoodFakeCode" + "x" * 30
 BAD = "4/0AbadFakeCode" + "y" * 30
 
 
+class WindowsLoginTest(unittest.TestCase):
+    """Windows has no pseudo-terminal for agy's sign-in, so the user is sent to a terminal instead."""
+
+    def setUp(self):
+        patcher = mock.patch.object(proc, "WINDOWS", True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_signed_out_answer_and_login_command_point_to_a_terminal(self):
+        with mock.patch.object(daemon, "call") as call:
+            text = login.note(login.start(auto=True))
+            call.assert_not_called()
+        self.assertIn("터미널", text)
+        self.assertIn("`agy`", text)
+        self.assertNotIn("accounts.google.com", text)
+
+    def test_pasted_code_kept_from_the_model_and_not_used(self):
+        with mock.patch.object(daemon, "call") as call:
+            text = login.submit(GOOD)
+            call.assert_not_called()
+        self.assertIn("쓰지 않았습니다", text)
+        self.assertIn("`agy`", text)
+
+
+@unittest.skipIf(WINDOWS, "agy's sign-in needs a pseudo-terminal, which Windows lacks")
 class LoginTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

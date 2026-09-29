@@ -1,8 +1,10 @@
 """Helpers shared by the tests: run the hook the way Claude Code does (sh hooks/run, JSON on stdin)
 against the fake agy in tests/fakebin, with a throwaway plugin data directory."""
+import atexit
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -13,6 +15,26 @@ import uuid
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAKEBIN = os.path.join(ROOT, "tests", "fakebin")
 sys.path.insert(0, ROOT)
+WINDOWS = os.name == "nt"
+
+from agy_readable import proc  # noqa: E402
+
+
+def windows_fakebin():
+    """Windows runs no script by its #! line, and a .cmd wrapper would mangle a one-shot prompt's newlines, so
+    the fake agy is wrapped in an agy.exe like the ones pip makes for console scripts."""
+    from pip._vendor.distlib.scripts import ScriptMaker
+
+    out = tempfile.mkdtemp(prefix="agyr-bin-")
+    atexit.register(shutil.rmtree, out, True)
+    maker = ScriptMaker(FAKEBIN, out, add_launchers=True)
+    maker.executable = sys.executable
+    maker.make("agy")
+    return out
+
+
+if WINDOWS:
+    FAKEBIN = windows_fakebin()
 
 SAMPLE = """설정 파일을 다시 읽도록 바꿨습니다. 이제 `config.load()`가 호출될 때마다 캐시를 확인하고, 파일이 바뀌었으면 새로 읽습니다.
 
@@ -42,9 +64,10 @@ def encode(text):
 
 def clean_env(data_dir, **extra):
     env = {k: v for k, v in os.environ.items()
-           if not k.startswith(("AGY_READABLE_", "CLAUDE_PLUGIN_OPTION_", "FAKE_"))}
+           if not k.startswith(("AGY_READABLE_", "CLAUDE_PLUGIN_OPTION_", "FAKE_")) or k == "AGY_READABLE_TCP"}
+    # Claude Code gives hooks on Windows the plugin root with forward slashes
     env.update(PATH=FAKEBIN + os.pathsep + env.get("PATH", ""), CLAUDE_PLUGIN_DATA=data_dir,
-               CLAUDE_PLUGIN_ROOT=ROOT, FAKE_RECORD=os.path.join(data_dir, "rec.txt"))
+               CLAUDE_PLUGIN_ROOT=ROOT.replace("\\", "/"), FAKE_RECORD=os.path.join(data_dir, "rec.txt"))
     env.update(extra)
     return env
 
@@ -106,3 +129,11 @@ def wait_until(pred, timeout=15.0):
 
 def remove(path):
     shutil.rmtree(path, ignore_errors=True)
+
+
+def kill(pid):
+    """Kill a process outright (on Windows os.kill terminates it; SIGKILL does not exist there)."""
+    os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+
+
+alive = proc.alive

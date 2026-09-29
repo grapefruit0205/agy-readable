@@ -1,6 +1,8 @@
 """Signing agy in to Antigravity from inside Claude Code.
 
-When agy is not signed in, the daemon runs agy's own sign-in flow (see daemon.Login) and the hook shows
+On Windows the daemon cannot give agy the terminal its sign-in needs (see daemon.Login), so the user is told to
+run `agy` once in a terminal; a pasted code or /agy-readable:login gets that advice too. Elsewhere, when agy is
+not signed in, the daemon runs agy's own sign-in flow (see daemon.Login) and the hook shows
 the Google sign-in URL under the answer, opening it in the browser. The sign-in page then shows a code;
 the user pastes it into Claude Code's prompt, where this module's UserPromptSubmit hook takes it, hands it
 to the waiting agy and blocks the prompt, so the code never reaches the model.
@@ -13,11 +15,13 @@ import shutil
 import subprocess
 import sys
 
-from agy_readable import config, daemon
+from agy_readable import config, daemon, proc
 
 CODE = re.compile(r"4/[0-9A-Za-z_\-]{20,}")  # a Google authorization code, as the sign-in page shows it
 COMMANDS = ("/agy-readable:login", "/login-agy")
 RETRY = "입력창에 `/agy-readable:login`을 입력하거나, 터미널에서 `agy`를 실행해 로그인하세요."
+MANUAL = ("Windows에서는 여기서 로그인할 수 없습니다. 터미널(PowerShell 등)에서 `agy`를 한 번 실행해 로그인하세요. "
+          "그다음 답변부터 다듬습니다.")
 
 
 def open_browser(url):
@@ -44,6 +48,8 @@ def open_browser(url):
 def start(auto):
     """Ask the daemon for a sign-in attempt; opens the browser for a new one. Returns the daemon's reply
     plus "opened"."""
+    if proc.WINDOWS:
+        return {"ok": False, "manual": True}
     try:
         daemon.ensure_running(wait=3.0)
         r = daemon.call({"op": "login_start", "auto": auto}, 20)
@@ -57,6 +63,8 @@ def note(r, markdown=True):
     """What to tell the user about a sign-in attempt from start()."""
     if r.get("already"):
         return "Antigravity에 이미 로그인되어 있습니다. 다음 답변부터 다듬습니다."
+    if r.get("manual"):
+        return "Antigravity 로그인이 필요합니다. " + MANUAL
     if r.get("cooldown"):
         return "Antigravity 로그인이 필요합니다. " + RETRY
     if r.get("pending"):
@@ -81,6 +89,8 @@ def note(r, markdown=True):
 
 def submit(code):
     """Hand a pasted code to the waiting agy. Returns the message for the user."""
+    if proc.WINDOWS:
+        return "이 코드는 쓰지 않았습니다. " + MANUAL
     try:
         r = daemon.call({"op": "login_code", "code": code}, 45)
     except (OSError, ValueError):
@@ -107,8 +117,6 @@ def submit(code):
 def prompt_hook():
     """UserPromptSubmit: take a pasted sign-in code (or /agy-readable:login) before it reaches the model."""
     event = json.load(sys.stdin)
-    if os.name == "nt":
-        return
     prompt = (event.get("prompt") or "").strip()
     if CODE.fullmatch(prompt):
         reason = submit(prompt)

@@ -13,8 +13,10 @@
 ## 필요한 것
 
 - Claude Code **2.1.280 이상** (`MessageDisplay` 훅). 터미널과 데스크톱 앱 모두 됩니다.
-- **Linux 또는 macOS**. Windows는 지원하지 않습니다(보조 프로세스가 유닉스 소켓을 씁니다). Windows에서는 훅이 아무것도 하지 않아 답변이 그대로 보입니다.
-- `python3` 또는 `python`으로 실행되는 **Python 3.8 이상**
+- **Linux, macOS 또는 Windows**.
+  - Windows에서는 Claude Code가 훅을 Git Bash로 실행하므로 [Git for Windows](https://gitforwindows.org/)가 있어야 합니다. 없으면 Claude Code가 PowerShell로 실행하는데, 거기서는 훅이 돌지 않습니다.
+  - Windows에서는 agy 로그인을 터미널에서 합니다([Antigravity 로그인](#antigravity-로그인)).
+- `python3`, `python`, `py` 중 하나로 실행되는 **Python 3.8 이상**
 - PATH에 있는 **agy(Antigravity CLI)**. 본인 Antigravity 계정으로 로그인되어 있어야 합니다. 로그인이 안 되어 있으면 agy-readable이 Claude Code 안에서 로그인을 요청합니다([Antigravity 로그인](#antigravity-로그인)).
   - agy는 헤드리스로 동작합니다. Antigravity가 OS 키링에 저장해 둔 OAuth 토큰으로 로그인합니다.
   - agy-readable은 PATH에 있는 `agy`를 실행할 뿐입니다. 인증 정보를 읽거나 복사하거나 저장하지 않고, 플러그인에 들어 있는 인증 정보도 없습니다.
@@ -46,6 +48,10 @@ agy-readable은 agy 자체의 로그인 절차를 씁니다. 비밀번호나 토
 agy 시작이 늦어 10초 안에 로그인 주소가 나오지 않으면, 로그인을 아직 준비 중이라고 알리고 잠시 뒤 `/agy-readable:login`을 입력하라고 합니다. 준비 중인 로그인은 계속 진행되고, 그 명령이 이어받습니다.
 
 60초가 지났거나 코드가 틀리면 그렇다고 알려 주고 새 로그인 페이지를 엽니다. 안내를 그냥 넘긴 경우, 10분 동안은 답변마다 페이지를 다시 열지 않습니다. 언제든 입력창에 `/agy-readable:login`을 입력해 다시 시작할 수 있습니다. 이 컴퓨터에 브라우저가 없다면(SSH 접속 등) 터미널에서 `agy`를 한 번 실행해도 같은 방법으로 로그인됩니다.
+
+**Windows에서는** Claude Code 안에서 로그인할 수 없습니다. 표준 라이브러리에 agy에게 줄 가상 터미널이 없기 때문입니다(아래 동작 방식 참고).
+- 답변 아래 안내와 `/agy-readable:login`이 터미널(PowerShell 등)에서 `agy`를 한 번 실행해 로그인하라고 알려 줍니다. 로그인하면 다음 답변부터 다듬어집니다.
+- 입력창에 코드를 붙여넣으면 Claude에게 보내지는 않지만, 로그인에 쓰지도 않습니다.
 
 동작 방식은 이렇습니다.
 - agy는 입력이 터미널일 때만 로그인 절차를 보여 줍니다. 그래서 데몬이 가상 터미널에서 `agy -p ok`를 실행하고, agy가 출력한 주소를 보여 준 뒤, 붙여넣은 코드를 그 터미널에 입력합니다.
@@ -138,7 +144,7 @@ Claude가 답을 쓰는 동안에는 답변이 보이지 않습니다. 다 쓰�
 Claude가 답변을 스트리밍 ──► 훅 (hooks/run → agy_readable/hook.py)
    중간 전송마다: 새 줄을 저장하고 화면에는 아무것도 표시하지 않음
    마지막 전송: 줄을 합치고 코드·링크·경로를 자리 표시로 바꿈
-        ──► 데몬 (유닉스 소켓) ──► 미리 띄워 둔 agy (stream-json 모드)
+        ──► 데몬 (유닉스 소켓, Windows는 127.0.0.1 TCP) ──► 미리 띄워 둔 agy (stream-json 모드)
                                    agy 프로세스 하나가 답변 하나만 처리하고 종료
    ① 자유롭게 다시 구성한 글 받기
    ② 의심 문장을 짚어 주고 원문과 맞춰 고칠 줄만 받기 (agy 한 번 더, 새 프로세스)
