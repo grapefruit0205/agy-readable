@@ -7,7 +7,7 @@ import time
 import unittest
 import uuid
 
-from support import ROOT, SAMPLE, clean_env, encode, event, new_data_dir, read_jsonl, remove, run_hook, stream
+from support import ROOT, SAMPLE, WINDOWS, clean_env, encode, event, new_data_dir, read_jsonl, remove, run_hook, stream
 
 from agy_readable import protect
 
@@ -165,10 +165,12 @@ class HookTest(unittest.TestCase):
         d = os.path.join(self.data, "samples")
         names = sorted(os.listdir(d))
         self.assertEqual([n.split("-", 2)[2] for n in names], ["0-rejected.json", "1-refined.json"])
-        self.assertEqual(os.stat(d).st_mode & 0o777, 0o700)
+        if not WINDOWS:  # no mode bits there; the data dir under the user's profile is theirs by its ACL
+            self.assertEqual(os.stat(d).st_mode & 0o777, 0o700)
         kept = []
         for n in names:
-            self.assertEqual(os.stat(os.path.join(d, n)).st_mode & 0o777, 0o600)
+            if not WINDOWS:
+                self.assertEqual(os.stat(os.path.join(d, n)).st_mode & 0o777, 0o600)
             with open(os.path.join(d, n), encoding="utf-8") as f:
                 kept.append(json.load(f))
         rejected, refined = kept
