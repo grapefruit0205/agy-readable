@@ -5,17 +5,31 @@ on:
 jobs:
   unittest:
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python: ["3.8", "3.12"]
+        tcp: [""]
         exclude:
           - os: macos-latest
             python: "3.8"
+        include:
+          # the daemon's Windows transport, where it can be told apart from the rest of Windows
+          - os: ubuntu-latest
+            python: "3.12"
+            tcp: "1"
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      # Claude Code runs hooks in Git Bash on Windows; the tests call its sh the same way
+      - if: runner.os == 'Windows'
+        run: Add-Content -Path $env:GITHUB_PATH -Value "C:\Program Files\Git\bin"
       # the tests run hooks/run through sh, as Claude Code does, against the fake agy in tests/fakebin
       - run: python -m unittest discover -s tests -v
+        env:
+          AGY_READABLE_TCP: ${{ matrix.tcp }}
+          PYTHONUTF8: ${{ runner.os == 'Windows' && '1' || '' }}

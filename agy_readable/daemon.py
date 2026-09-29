@@ -10,7 +10,8 @@ started beside it; a request that finds no ready spare goes to a starting one an
 and a request with no answer after HEDGE_AFTER (or whose workers all failed) is sent to one more.
 The first answer wins and every worker involved is shut down.
 
-Protocol: one JSON line each way over a unix socket.
+Protocol: one JSON line each way over a unix socket; where there are none (Windows), over TCP on 127.0.0.1,
+with the port and a token in a file only the user can read (see endpoint()), and the token in every request.
   {"op": "ask", "prompt": str, "timeout": s, "model": str, "weight": n?} -> {"ok": true, "text": str, "warm": bool, ...}
   ("weight": how many prompt characters' worth of time the answer should take; default the prompt's length)
                                                              | {"ok": false, "error": str, "timed_out": bool}
@@ -25,12 +26,16 @@ agy just fails ("authentication required"), so the daemon notes that and, when a
 `agy -p` with a pseudo-terminal as stdin: agy then prints a Google sign-in URL and waits 60 s for the code
 the sign-in page shows. The hook shows the URL, and the code the user pastes into Claude Code's prompt is
 written to that terminal. agy itself exchanges the code and stores the token; the daemon never sees a token.
+Windows has no pseudo-terminal in the standard library, so there the user signs in by running `agy` once in a
+terminal (login.start says so), and the daemon only notices when agy works again.
 """
 import hashlib
+import hmac
 import json
 import os
 import queue
 import re
+import secrets
 import signal
 import socket
 import subprocess
@@ -38,7 +43,7 @@ import sys
 import threading
 import time
 
-from agy_readable import __version__, config
+from agy_readable import __version__, config, proc
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPARE_MAX_AGE = 1200  # replace a spare that has waited this long; agy's sign-in token lives about an hour
@@ -52,9 +57,13 @@ LOGIN_WINDOW = 60  # agy waits this long for the sign-in code (fixed in agy)
 LOGIN_COOLDOWN = 600  # an answer opens the sign-in page on its own at most this often
 LOGIN_URL_WAIT = 10  # a signed-out agy prints its URL within a second; longer means it is still starting
 SIGNIN_URL = re.compile(r"https://accounts\.google\.com/\S+")
+TCP = config.opt("TCP", not hasattr(socket, "AF_UNIX"))  # on only where needed; the tests turn it on elsewhere
 
 
-def sock_path():
+def endpoint():
+    """The unix socket, or with TCP the file holding {"port", "token"}; the daemon's lock is this + ".lock"."""
+    if TCP:
+        return os.path.join(config.data_dir(), "daemon.addr")
     # unix socket paths are limited to ~108 bytes, so the data directory is hashed into the name
     name = f"agy-readable-{hashlib.sha1(config.data_dir().encode()).hexdigest()[:8]}.sock"
     base = os.environ.get("XDG_RUNTIME_DIR", "")
@@ -70,10 +79,29 @@ def log(**fields):
 
 # ---------------------------------------------------------------- client side (hook and CLI)
 
-def call(msg, timeout):
-    with socket.socket(socket.AF_UNIX) as s:
+def connect(timeout):
+    """A socket to the daemon, and the token its requests carry (None over a unix socket)."""
+    if not TCP:
+        s = socket.socket(socket.AF_UNIX)
         s.settimeout(timeout)
-        s.connect(sock_path())
+        try:
+            s.connect(endpoint())
+        except OSError:
+            s.close()
+            raise
+        return s, None
+    with open(endpoint(), encoding="utf-8") as f:
+        addr = json.load(f)
+    if not proc.alive(int(addr["pid"])):  # left by a daemon that was killed; Windows takes ~2 s to refuse
+        raise ConnectionRefusedError("daemon not running")
+    return socket.create_connection(("127.0.0.1", int(addr["port"])), timeout), addr["token"]
+
+
+def call(msg, timeout):
+    s, token = connect(timeout)
+    with s:
+        if token:
+            msg = dict(msg, token=token)
         s.sendall((json.dumps(msg, ensure_ascii=False) + "\n").encode())
         buf = b""
         while not buf.endswith(b"\n"):
@@ -101,11 +129,11 @@ def ensure_running(wait=0.0):
         except (OSError, ValueError):
             pass
         if time.time() - last_spawn > 1.0:  # again if a new daemon lost the lock to one still shutting down
-            # own session + no inherited stdio: the hook must not wait on (or kill) the daemon
+            # own process group + no inherited stdio: the hook must not wait on (or kill) the daemon
             env = dict(os.environ, PYTHONPATH=ROOT + os.pathsep + os.environ.get("PYTHONPATH", ""))
             subprocess.Popen([sys.executable, "-m", "agy_readable.daemon"], cwd=ROOT, env=env,
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             start_new_session=True)
+                             **proc.detached())
             last_spawn = time.time()
         if time.time() >= deadline:
             return False
@@ -124,10 +152,10 @@ class Worker:
         self.usage = {}
         self.events = queue.Queue()
         self.p = subprocess.Popen(
-            [config.AGY, "--model", model, "--disable-slash-commands", "--input-format", "stream-json",
+            [proc.agy(), "--model", model, "--disable-slash-commands", "--input-format", "stream-json",
              "--output-format", "stream-json", "-p", ""],
             cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-            start_new_session=True)
+            encoding="utf-8", **proc.detached())
         threading.Thread(target=self._pump, daemon=True).start()
 
     def _pump(self):
@@ -187,10 +215,7 @@ class Worker:
             try:
                 self.p.wait(timeout=grace)
             except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(self.p.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                proc.kill_tree(self.p)
                 self.p.wait()
         threading.Thread(target=run, daemon=True).start()
 
@@ -200,7 +225,7 @@ class Login:
     (with a pipe it just fails). agy prints the sign-in URL on stderr and reads the code from the terminal."""
 
     def __init__(self, model, on_signed_in):
-        import pty  # POSIX only, like the rest of the daemon
+        import pty  # POSIX only: on Windows login.start sends the user to a terminal instead
         import termios
 
         cwd = os.path.join(config.data_dir(), "agy_cwd")
@@ -219,9 +244,9 @@ class Login:
         attrs[3] &= ~termios.ECHO  # the code is not echoed back anywhere
         termios.tcsetattr(slave, termios.TCSANOW, attrs)
         try:
-            self.p = subprocess.Popen([config.AGY, "--model", model, "--disable-slash-commands", "-p", "ok"],
+            self.p = subprocess.Popen([proc.agy(), "--model", model, "--disable-slash-commands", "-p", "ok"],
                                       cwd=cwd, stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                      text=True, start_new_session=True)
+                                      text=True, encoding="utf-8", errors="replace", **proc.detached())
         except OSError:
             os.close(self.master)
             raise
@@ -288,10 +313,7 @@ class Login:
         self._notify(code_sent=True)
 
     def kill(self):
-        try:
-            os.killpg(self.p.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        proc.kill_tree(self.p)
 
 
 class Daemon:
@@ -307,6 +329,7 @@ class Daemon:
         self.auth_required = False  # agy is not signed in to Antigravity
         self.login = None
         self.last_auto_login = 0.0
+        self.token = None  # with TCP, what every request must carry
 
     def take(self):
         """The workers to send a request to: a ready spare, else the oldest starting one plus a fresh one."""
@@ -550,7 +573,7 @@ class Daemon:
     def stop(self):
         self.stopping.set()
         try:
-            os.unlink(sock_path())
+            os.unlink(endpoint())
         except OSError:
             pass
         self.lock_file.close()  # after the unlink, so a successor never has its fresh socket deleted by us
@@ -572,6 +595,8 @@ class Daemon:
                         return
                     buf += chunk
                 msg = json.loads(buf)
+                if self.token and not hmac.compare_digest(str(msg.get("token", "")).encode(), self.token.encode()):
+                    return  # some other local program on the TCP port
                 if msg.get("op") == "ask":
                     res = self.handle_ask(msg)
                 elif msg.get("op") == "ping":
@@ -596,23 +621,55 @@ class Daemon:
             except (OSError, ValueError):
                 pass  # client gave up (hook timeout); the workers were already retired in handle_ask
 
-    def run(self):
-        import fcntl  # POSIX only; imported here so the hook can load this module anywhere
+    def hold_lock(self, path):
+        """Hold <path>.lock while running; False if another daemon already serves this data directory.
+        The lock goes when the file is closed or the process dies."""
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self.lock_file = open(path + ".lock", "a")  # not "w": on Windows truncating a locked file fails
+        try:
+            if proc.WINDOWS:
+                import msvcrt
+                self.lock_file.seek(0)
+                msvcrt.locking(self.lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self.lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self.lock_file.close()
+            return False
+        return True
 
-        path = sock_path()
-        self.lock_file = open(path + ".lock", "w")
-        try:
-            fcntl.flock(self.lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            return  # another daemon already serves this data directory
-        try:
-            os.unlink(path)  # left over from a daemon that was killed
-        except OSError:
-            pass
-        srv = socket.socket(socket.AF_UNIX)
-        srv.bind(path)
-        os.chmod(path, 0o600)
+    def listen(self, path):
+        if not TCP:
+            try:
+                os.unlink(path)  # left over from a daemon that was killed
+            except OSError:
+                pass
+            srv = socket.socket(socket.AF_UNIX)
+            srv.bind(path)
+            os.chmod(path, 0o600)
+            srv.listen(16)
+            return srv
+        srv = socket.socket(socket.AF_INET)
+        srv.bind(("127.0.0.1", 0))
         srv.listen(16)
+        self.token = secrets.token_hex(16)
+        tmp = path + ".tmp"
+        with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
+            json.dump({"port": srv.getsockname()[1], "token": self.token, "pid": os.getpid()}, f)
+        for _ in range(50):  # a client may have the old file open for a moment, which Windows won't replace
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                time.sleep(0.02)
+        return srv
+
+    def run(self):
+        path = endpoint()
+        if not self.hold_lock(path):
+            return
+        srv = self.listen(path)
         signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=self.stop).start())
         log(started=os.getpid(), model=self.model, spares=config.SPARES)
         threading.Thread(target=self.maintain, daemon=True).start()

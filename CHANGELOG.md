@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0 — 2026-09-29
+
+- Windows is supported. Until now the hook did nothing there and answers were shown as Claude wrote them.
+  - The daemon listens on TCP at 127.0.0.1 where Python has no unix sockets. Its port and a random token are in `<data dir>/daemon.addr`, and a request without the token is dropped unanswered. A file left by a daemon that was killed is recognised by its pid, so the next answer does not wait about 2 s for Windows to refuse the connection.
+  - The daemon's lock uses `msvcrt.locking`. agy runs in its own process group with a hidden console, so no console window pops up, and is stopped with `taskkill /T`. agy is started by its full path (`agy.exe` or whatever `agy` resolves to on PATH).
+  - agy's output is read as UTF-8, and `hooks/run` and `bin/agy-readable` set `PYTHONUTF8=1`, so Korean is not garbled through the code page (cp949). They also try `py` after `python3` and `python`, and run from the plugin root, so `python -m` finds the package even if Git Bash's `/c/...` PYTHONPATH does not reach Python.
+  - Sign-in: Windows has no pseudo-terminal in the standard library, so agy cannot be signed in from inside Claude Code. The note under an answer and `/agy-readable:login` say to run `agy` once in a terminal instead. A pasted code is kept from Claude and not used.
+  - Needs Git for Windows: Claude Code runs hooks in Git Bash, and without it in PowerShell, where the hooks cannot run.
+- Tests run on Windows too (agy faked by an `agy.exe` wrapper), and on Linux over TCP (`AGY_READABLE_TCP=1`).
+
 ## 0.4.1 — 2026-09-25
 
 - An answer that already has `⟦n⟧` in it (one explaining this plugin, say) is rewritten too. Until now it was shown as it was, with `원문에 ⟦숫자⟧ 표기가 있어 보호할 수 없음`. Such a `⟦n⟧` is now protected like code: set aside before the placeholders are made, put back inside any code that holds it, and given a placeholder of its own in prose. Placeholders are put back in one pass, so a `⟦n⟧` inside restored code is left as it is.

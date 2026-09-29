@@ -9,8 +9,8 @@ It changes only what you see. The conversation Claude keeps, and its context for
 ## Requirements
 
 - Claude Code **2.1.280 or newer** (the `MessageDisplay` hook), in a terminal or the desktop app
-- **Linux or macOS**. Windows is not supported (the helper process uses unix sockets); there the hook stays out of the way and answers are shown unchanged.
-- **Python 3.8 or newer** as `python3` or `python`
+- **Linux, macOS or Windows**. On Windows, Claude Code runs hooks in Git Bash, so [Git for Windows](https://gitforwindows.org/) must be installed (without it Claude Code falls back to PowerShell, where the hooks cannot run). agy is signed in from a terminal there ([Signing in](#signing-in-to-antigravity)).
+- **Python 3.8 or newer** as `python3`, `python` or `py`
 - **agy (the Antigravity CLI) installed**, on your PATH. It has to be signed in to your own Antigravity account; if it is not, agy-readable asks you to sign in from inside Claude Code ([Signing in](#signing-in-to-antigravity)). agy is headless: it signs in with the OAuth token Antigravity keeps in your OS keyring. agy-readable only runs the `agy` on your PATH. It never reads, copies or stores credentials, and it ships with none: every user runs on their own sign-in and their own quota.
 
 ## Install
@@ -34,6 +34,8 @@ agy-readable uses agy's own sign-in and never handles passwords or tokens. If ag
 3. Paste the code by itself into Claude Code's input box and press Enter, **within 60 seconds** of the note (agy's own limit). agy-readable takes it out of the prompt, so it is not sent to Claude, hands it to agy, and replies *Antigravity 로그인이 끝났습니다*. From the next answer on, answers are rewritten.
 
 If agy is slow to start and has not printed its sign-in URL within 10 seconds, the note says the sign-in is still starting and asks you to type `/agy-readable:login` a little later; the attempt keeps running and the command picks it up. If the 60 seconds run out or the code is wrong, it says so and opens a fresh sign-in page. An ignored offer is not reopened by answers for 10 minutes; start again any time by typing `/agy-readable:login` in the input box. Without a browser on this machine (over SSH, for example), running `agy` once in a terminal signs in the same way.
+
+**On Windows** agy-readable cannot sign agy in from inside Claude Code: the standard library has no pseudo-terminal to give agy (see below). The note under the answer, and `/agy-readable:login`, say to run `agy` once in a terminal (PowerShell, say) and sign in there; answers are rewritten from the next one on. A code pasted into the input box is kept from Claude but not used.
 
 How it works: agy offers its sign-in only when its input is a terminal, so the daemon runs `agy -p ok` on a pseudo-terminal, shows the URL agy prints, and types the pasted code into that terminal. agy exchanges the code and stores its token in the OS keyring as usual; the one-off `ok` request is its only model call. Claude Code shows a blocked input back to you as "Original prompt"; the code is single-use and tied to that sign-in attempt, so it is worthless afterwards. Set `AGY_READABLE_BROWSER=none` to only show the link, or to the command that should open it.
 
@@ -98,7 +100,7 @@ When the exact wording matters, Claude's original is in `/export` and the transc
 Claude streams an answer ──► hook (hooks/run → agy_readable/hook.py)
    each flush: store the new lines, show nothing
    final flush: join the lines, code / links / paths → placeholders
-        ──► daemon (unix socket) ──► a pre-started agy, stream-json mode
+        ──► daemon (unix socket; TCP on 127.0.0.1 on Windows) ──► a pre-started agy, stream-json mode
                                      one answer per agy process, then it exits
    ① a free rewrite
    ② suspect sentences pointed out, only the lines to fix come back (a second request, another agy)

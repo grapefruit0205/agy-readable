@@ -23,12 +23,11 @@ import json
 import os
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import time
 
-from agy_readable import config, daemon, login, protect, review
+from agy_readable import config, daemon, login, proc, protect, review
 
 PROMPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_ko.txt")
 STALE = 3600  # leftover state from aborted messages is removed after this many seconds
@@ -136,9 +135,9 @@ def one_shot(prompt, timeout):
     os.makedirs(cwd, exist_ok=True)
     try:
         # stdin is a closed pipe: signed out, agy then fails at once instead of waiting 60 s for a sign-in code
-        p = subprocess.Popen([config.AGY, "--model", config.MODEL, "--disable-slash-commands", "-p", prompt],
+        p = subprocess.Popen([proc.agy(), "--model", config.MODEL, "--disable-slash-commands", "-p", prompt],
                              cwd=cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             text=True, start_new_session=True)
+                             text=True, encoding="utf-8", errors="replace", **proc.detached())
     except OSError as e:
         return None, f"agy 실행 실패 ({e.strerror})"
     p.stdin.close()
@@ -146,7 +145,7 @@ def one_shot(prompt, timeout):
     try:
         out, err = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
-        os.killpg(p.pid, signal.SIGKILL)  # agy may leave helpers behind; take the whole group down
+        proc.kill_tree(p)  # agy may leave helpers behind; take the whole group down
         p.communicate()
         return None, over_budget()
     if p.returncode != 0 and "authentication required" in err:
@@ -308,8 +307,6 @@ def finish(event, full):
 
 def main():
     event = json.load(sys.stdin)
-    if os.name == "nt":  # the daemon needs unix sockets; printing nothing leaves the answer as Claude wrote it
-        return
     mdir = os.path.join(state_dir(), event["message_id"])
     os.makedirs(mdir, exist_ok=True)
     write_part(mdir, int(event.get("index", 0)), event.get("delta", ""))

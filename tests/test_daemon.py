@@ -3,7 +3,6 @@ hedging and lifecycle. The steps share one data directory and run in order."""
 import json
 import os
 import re
-import signal
 import socket
 import subprocess
 import sys
@@ -12,9 +11,10 @@ import time
 import unittest
 from unittest import mock
 
-from support import ROOT, SAMPLE, clean_env, decode, encode, event, new_data_dir, read_jsonl, remove, run_hook, stream, wait_until
+from support import (ROOT, SAMPLE, alive, clean_env, decode, encode, event, kill, new_data_dir, read_jsonl, remove,
+                     run_hook, stream, wait_until)
 
-from agy_readable import __version__, daemon
+from agy_readable import __version__, daemon, proc
 
 
 def marker(out):
@@ -33,7 +33,7 @@ class DaemonTest(unittest.TestCase):
         # the second pass is off here (one request per answer) except where a test turns it on
         cls.env = clean_env(cls.data, FAKE_MODE_FILE=cls.mode_file, FAKE_PIDS=cls.pids, FAKE_STARTUP="1.5",
                             FAKE_GEN="0.2", AGY_READABLE_REVIEW="0", FAKE_REVIEW_FILE=cls.review_file)
-        os.environ["CLAUDE_PLUGIN_DATA"] = cls.data  # so daemon.call / sock_path here reach the test daemon
+        os.environ["CLAUDE_PLUGIN_DATA"] = cls.data  # so daemon.call / endpoint here reach the test daemon
         cls.set_mode("ok")
 
     @classmethod
@@ -65,22 +65,18 @@ class DaemonTest(unittest.TestCase):
     def start(cls, **env):
         subprocess.Popen([sys.executable, "-m", "agy_readable.daemon"], cwd=ROOT,
                          env=dict(cls.env, PYTHONPATH=ROOT, **env), stdin=subprocess.DEVNULL,
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **proc.detached())
 
     @classmethod
     def workers(cls):
         """Fake agy workers of this test run still alive."""
-        alive = []
+        running = []
         for name in os.listdir(cls.pids):
-            try:
-                os.kill(int(name), 0)
-            except ProcessLookupError:
+            if not alive(int(name)):
                 os.remove(os.path.join(cls.pids, name))
                 continue
-            except PermissionError:
-                pass
-            alive.append(name)
-        return alive
+            running.append(name)
+        return running
 
     def spare_ready(self):
         p = self.ping()
@@ -162,7 +158,7 @@ class DaemonTest(unittest.TestCase):
         stream(self.env, SAMPLE)
         wait_until(self.spare_ready)
         pid = self.ping()["pid"]
-        os.kill(pid, signal.SIGKILL)
+        kill(pid)
         self.assertTrue(wait_until(lambda: not self.workers(), 8), self.workers())  # orphans exit on stdin EOF
         out, _ = self.ask()
         self.assertIsNotNone(marker(out))
@@ -225,10 +221,11 @@ class DaemonTest(unittest.TestCase):
         self.assertTrue(wait_until(lambda: self.ping() is None and not self.workers(), 10), self.workers())
 
 
+    @unittest.skipIf(daemon.TCP, "daemons of other versions only ever listened on a unix socket")
     def test_14_daemon_of_another_version_replaced(self):
         # after a plugin update the socket is the same; a 0.1.0 daemon answers pings without a version
         self.stop()
-        path, got = daemon.sock_path(), []
+        path, got = daemon.endpoint(), []
         srv = socket.socket(socket.AF_UNIX)
         srv.bind(path)
         srv.listen(4)
@@ -250,6 +247,19 @@ class DaemonTest(unittest.TestCase):
             self.assertTrue(daemon.ensure_running(wait=10))
         self.assertEqual(got, ["ping", "stop"])
         self.assertEqual(self.ping()["version"], __version__)
+
+    @unittest.skipUnless(daemon.TCP, "only the TCP port is open to other local programs")
+    def test_14b_tcp_request_without_token_ignored(self):
+        if not self.ping():
+            self.start()
+        self.assertTrue(wait_until(self.spare_ready))
+        with open(daemon.endpoint(), encoding="utf-8") as f:
+            addr = json.load(f)
+        for token in (None, "0" * 32, "토큰"):
+            with socket.create_connection(("127.0.0.1", addr["port"]), 3) as s:
+                s.sendall((json.dumps({"op": "stop", "token": token}) + "\n").encode())
+                self.assertEqual(s.recv(100), b"")  # closed without an answer
+        self.assertIsNotNone(self.ping())
 
     def test_15_rejected_rewrite_asked_again(self):
         # the retry is a second request to the daemon, answered by another single-use worker
