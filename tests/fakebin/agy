@@ -70,6 +70,13 @@ def review_answer(prompt):
     return "없음"
 
 
+def marker(prompt, **kw):
+    """What the fake puts above the text it sends back: [번역 ...] for a translation, [다듬음 ...] for a rewrite."""
+    kind = "번역" if "한국어가 아닌 문장이 들어 있다" in prompt else "다듬음"
+    fields = " ".join(f"{k}={v}" for k, v in kw.items())
+    return f"[{kind} {fields}]".translate(DIGITS)
+
+
 def body_of(prompt):
     return prompt.split("---\n", 1)[1] if "---\n" in prompt else prompt
 
@@ -170,7 +177,7 @@ if "--input-format" in sys.argv:
         if m == "dropnum":
             body = body.replace("1,024", "천여")
         emit({"event": "result", "result": {"status": "SUCCESS", "usage": {"input_tokens": 14500},
-                                            "response": f"[다듬음 pid={os.getpid()} turn={turn} model={MODEL}]".translate(DIGITS) + "\n" + body}})
+                                            "response": marker(prompt, pid=os.getpid(), turn=turn, model=MODEL) + "\n" + body}})
     sys.exit(0)
 
 prompt = sys.argv[sys.argv.index("-p") + 1]
@@ -200,7 +207,9 @@ if m == "droptoken":
     body = body.replace("⟦0⟧", "", 1)
 if m == "addpath":  # a path the original never had
     body = body.replace("캐시를 확인하고", "캐시를 cache/app/now 에서 확인하고")
-out = f"[다듬음 model={MODEL}]".translate(DIGITS) + "\n" + body
+if m == "blocksentence":  # a code block's placeholder moved into a sentence
+    body = re.sub(r"\n(⟦\d+⟧)\n", r" 여기에 \1 있음\n", body, count=1)
+out = marker(prompt, model=MODEL) + "\n" + body
 if m == "fence":
     out = "```markdown\n" + out + "\n```"
 print(out)

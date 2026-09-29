@@ -119,14 +119,15 @@ def unmarked(masked, texts):
     return found
 
 
-def suspects(original, masked, lines, us):
-    """Per sentence, what the original lacks: {sentence number: [words, numbers, code, a mark]}."""
+def suspects(original, masked, lines, us, translated=False):
+    """Per sentence, what the original lacks: {sentence number: [words, numbers, code, a mark]}. For a
+    translation every Korean word is new, so words are left out and only numbers, code and marks listed."""
     known_numbers = set(protect.numbers(masked))
     texts = [lines[i][s:e] for i, s, e in us]
     bare = unmarked(masked, texts)
     found = {}
     for n, u in enumerate(texts, 1):
-        f = novel(u, masked)[:8]
+        f = [] if translated else novel(u, masked)[:8]
         f += [f"숫자 {x}" for x in protect.numbers(u) if x not in known_numbers]
         _, added = protect.mask(protect.TOKEN_RE.sub(" ", u))
         f += [f"코드 모양 {x.text} (원문에서는 코드가 아님)" for x in added or [] if x.core() not in original]
@@ -159,16 +160,24 @@ def missing(masked, draft):
     return rows
 
 
-def build(original, masked, draft):
-    """(prompt, the draft's lines, its sentences, how many suspects), or (None, ...) when nothing is suspect."""
+TRANSLATED = ("원문에는 한국어가 아닌 문장이 있고, 다시 쓴 글은 그것을 한국어로 옮긴 글이다. 원문 뜻을 그대로 옮긴 문장은 "
+              "말이 달라도 고치지 마라. 서비스·명령어·설정·파일 이름은 원문 표기 그대로여야 한다.\n")
+
+
+def build(original, masked, draft, translated=False, always=False):
+    """(prompt, the draft's lines, its sentences, how many suspects), or (None, ...) when nothing is suspect
+    and not `always` (Claude as the reviewer reads every sentence, suspect or not)."""
     lines = draft.split("\n")
     us = units(lines)
-    listed = [f"- [{n}] " + ", ".join(f) for n, f in suspects(original, masked, lines, us).items()]
+    listed = [f"- [{n}] " + ", ".join(f) for n, f in suspects(original, masked, lines, us, translated).items()]
     listed += missing(masked, draft)
-    if not listed:
+    if not listed and not always:
         return None, lines, us, 0
     with open(PROMPT, encoding="utf-8") as f:
         base = f.read()
+    if translated:
+        head, sep, tail = base.rpartition("---\n")
+        base = head + TRANSLATED + sep + tail
     # code blocks go in unnumbered, where they stand, or agy takes them for missing and adds them again
     numbered, k = [], 0
     for i, line in enumerate(lines):
@@ -179,7 +188,7 @@ def build(original, masked, draft):
             numbered.append(line.strip())
     numbered = "\n".join(numbered)
     prompt = (base + "[원문]\n" + masked + "\n\n[다시 쓴 글]\n" + numbered + "\n\n[의심 목록]\n"
-              + "\n".join(listed) + "\n")
+              + ("\n".join(listed) or "없음") + "\n")
     return prompt, lines, us, len(listed)
 
 

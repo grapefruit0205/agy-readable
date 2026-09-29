@@ -30,6 +30,7 @@ def windows_fakebin():
     maker = ScriptMaker(FAKEBIN, out, add_launchers=True)
     maker.executable = sys.executable
     maker.make("agy")
+    maker.make("claude")
     return out
 
 
@@ -66,7 +67,9 @@ def clean_env(data_dir, **extra):
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(("AGY_READABLE_", "CLAUDE_PLUGIN_OPTION_", "FAKE_")) or k == "AGY_READABLE_TCP"}
     # Claude Code gives hooks on Windows the plugin root with forward slashes
+    # the fake claude by its full path too, so no test ever reaches the real Claude Code on PATH
     env.update(PATH=FAKEBIN + os.pathsep + env.get("PATH", ""), CLAUDE_PLUGIN_DATA=data_dir,
+               AGY_READABLE_CLAUDE=os.path.join(FAKEBIN, "claude.exe" if WINDOWS else "claude"),
                CLAUDE_PLUGIN_ROOT=ROOT.replace("\\", "/"), FAKE_RECORD=os.path.join(data_dir, "rec.txt"))
     env.update(extra)
     return env

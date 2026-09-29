@@ -2,7 +2,7 @@
 
 **English** · [한국어](README.ko.md)
 
-**Claude's Korean answers, rewritten into Korean you can read at a glance.** Claude Code's answers in Korean are often dense: long sentences, translated-sounding phrasing, the point buried in the middle. agy-readable is a Claude Code plugin that hands each finished answer to [agy](https://antigravity.google/) (the Antigravity CLI) running Gemini 3.8 Flash, which rebuilds it into plain Korean with a clear structure: headings, a short summary, questions and answers. A free rewrite reads better but can slip in a reason or a stronger word the original never had, so agy is asked twice: first to rewrite freely, then to check that rewrite against the original sentence by sentence and fix only what is off ([The second pass](#the-second-pass)). Code, links, URLs and file paths never reach agy: they go out as placeholders and are put back byte for byte afterwards. Numbers, and marks such as `추정` (estimate) and `확인된 사실` (verified), stay in the text; none of the original's may go missing, and no number may be added. If a check fails, or agy is slow or fails, you get Claude's original answer instead, with one line saying why. See [What is checked](#what-is-checked) for the details and for what the checks cannot catch.
+**Claude's Korean answers, rewritten into Korean you can read at a glance.** Claude Code's answers in Korean are often dense: long sentences, translated-sounding phrasing, the point buried in the middle. agy-readable is a Claude Code plugin that hands each finished answer to [agy](https://antigravity.google/) (the Antigravity CLI) running Gemini 3.8 Flash, which rebuilds it into plain Korean with a clear structure: headings, a short summary, questions and answers. A free rewrite reads better but can slip in a reason or a stronger word the original never had, so two models take part: agy rewrites freely, then Claude (Opus, through your Claude Code) checks that rewrite against the original sentence by sentence and fixes only what is off ([Claude as the second pass](#claude-as-the-second-pass)). Answers with sentences in another language, English progress lines included, are translated into Korean the same way ([Translation](#translation)). Code, links, URLs and file paths never reach agy: they go out as placeholders and are put back byte for byte afterwards. Numbers, and marks such as `추정` (estimate) and `확인된 사실` (verified), stay in the text; none of the original's may go missing, and no number may be added. If a check fails, or agy is slow or fails, you get Claude's original answer instead, with one line saying why. See [What is checked](#what-is-checked) for the details and for what the checks cannot catch.
 
 It changes only what you see. The conversation Claude keeps, and its context for the next turn, is Claude's original text.
 
@@ -44,14 +44,25 @@ How it works: agy offers its sign-in only when its input is a terminal, so the d
 While Claude is writing, the answer is hidden. When it is done, the rewritten answer appears in one piece. Answers are left exactly as Claude wrote them when they are:
 
 - shorter than 300 or longer than 6,000 characters,
-- not in Korean,
 - mostly code (more than 60% inside code fences).
+
+An answer with sentences in another language is translated instead ([Translation](#translation)); those limits do not apply to it.
 
 When a rewrite is not used, the original is shown with a note such as `_(다듬기 생략: agy 응답이 60초를 넘음 · 원문 표시)_`. Possible reasons: agy is not signed in (see above), agy took longer than the timeout, agy returned an error (for example a 503 from its backend), agy is not on PATH, or the rewrite failed a check, retry included ([What is checked](#what-is-checked)). A failed check is named in the note, for example `코드·링크·경로 일부가 빠짐: …`, `숫자가 빠지거나 바뀜: -3`, `원문에 없는 숫자가 생김: 5`, `단서가 빠짐: 추정` or `결과 길이가 비정상`.
 
 A rewrite that fails a check is not given up on at once. A missing number, placeholder or mark goes to the second pass to be put back, and an invented number, path or code to be taken out; otherwise, or if it is still missing, agy is told what was wrong (for example `숫자가 빠지거나 바뀜: 4`) and asked for the rewrite again from the start, when the time left within the timeout is at least what the rejected attempt took. With less, the original is shown straight away rather than after a wait. If the second attempt fails too, the note says so: `숫자가 빠지거나 바뀜: 4 (다시 시도해도 같음)` or `… · 다시 시도: agy 응답이 60초를 넘음`.
 
 If a piece of the answer never reaches the hook (Claude Code runs up to three display hooks at once, and one can fail), the answer is not rewritten. What did arrive is shown, with a warning where the piece is missing; the full answer is in Claude's transcript and `/export`. The hook waits up to 10 seconds for a late piece before deciding it is missing.
+
+## Claude as the second pass
+
+Since 0.6.0 the second pass is done by Claude (Opus), not agy: agy rewrites, Claude reads the original and the rewrite sentence by sentence and sends back only the lines to change, and the usual checks run on the result. It runs headless on the Claude Code sign-in already on your computer (`claude -p --model opus --effort low`), with no tools, no settings sources (so no plugins, hooks or MCP servers; this plugin's hook cannot run inside it), no CLAUDE.md, no auto-memory, no saved session and an empty working directory. The daemon keeps one Claude waiting, so a check takes about 3.5-4.5 s. It counts against your Claude usage like any `claude -p` request. Set `reviewer` to `agy` for the agy second pass of 0.4-0.5.
+
+## Translation
+
+Claude sometimes answers, or writes a short progress line, in English although you write in Korean. Such an answer is translated into plain Korean: from 300 to 6,000 characters it is translated and rebuilt in one agy request, its Korean sentences rebuilt too; shorter (a progress line), longer, or mostly code, it is translated faithfully, in the original's order and layout. Names of services, commands, settings and files are left as they are, and Claude checks every translation as a translation. It counts as another language when a sentence, table cell or heading has no Hangul and either three or more Latin words with an everyday function word (`the`, `is`, `and`, `que`, `und`, ...) or two or more letters of another script (Japanese, Chinese, Cyrillic, ...). Code, links and paths are masked first, so a Korean answer quoting an English command is not taken for English, and bare names such as `CloudFront + WAF` or `Security & Access` are not either. A mixed answer (Korean with some English sentences) goes the same way, as a whole.
+
+Every length is translated, short progress lines included, up to 40,000 characters. An answer longer than 4,000 characters is cut at blank lines outside code blocks and its pieces are translated side by side, all within the timeout. Code, links and paths go out as placeholders as for a rewrite, and the same checks apply, except that the result may be a fifth to three times the original's length. A translation that fails a check is asked for once more, told what was wrong; if it fails again it is shown anyway, never the original, with its code, links and paths put back (a placeholder the translation lost is added at the end, under `_(번역에서 자리를 잃은 코드·링크·경로)_`) and a note such as `_(agy-readable: 번역이 검사에 걸렸지만 번역본 표시: 숫자가 빠지거나 바뀜: 4)_`. Only when agy gives no translation at all (signed out, timeout, error) is the original shown, with `_(번역 생략: … · 원문 표시)_`; a piece agy failed on stays as it was, the others are translated. `translate` option / `AGY_READABLE_TRANSLATE` (on).
 
 ## The second pass
 
@@ -132,11 +143,13 @@ Set at install time, or later with `/plugin` → agy-readable → configure:
 | `model` | `gemini-3.8-flash-low` | Model agy rewrites with. `agy models` lists them. |
 | `timeout` | `60` | Seconds to wait for agy, both passes together, before showing the original. |
 | `review` | `true` | The second pass (checking the rewrite against the original). Off is faster but leaves anything the rewrite added. |
+| `reviewer` | `opus` | Who does the second pass: `opus` (Claude, through the Claude Code CLI) or `agy`. |
 | `notes` | `true` | The one-line note under an answer shown unrewritten. |
 | `retries` | `1` | How many times a rewrite that fails a check is asked for again, with what was wrong. `0` = show the original at once. |
 | `keep` | `20` | How many originals and rewrites to keep for comparing. `0` = keep none. |
+| `translate` | `true` | Translate answers with sentences in another language into Korean. Off leaves them as they are. |
 
-Environment variables override these and expose a few more: `AGY_READABLE_MODEL`, `AGY_READABLE_TIMEOUT`, `AGY_READABLE_REVIEW`, `AGY_READABLE_NOTES`, `AGY_READABLE_RETRIES`, `AGY_READABLE_KEEP`, `AGY_READABLE_AGY` (path to agy), `AGY_READABLE_BROWSER` (command that opens the sign-in page; `none` = link only), `AGY_READABLE_MIN_CHARS` (300), `AGY_READABLE_MAX_CHARS` (6000), `AGY_READABLE_DAEMON=0` (a one-shot `agy -p` per answer, nothing left running), `AGY_READABLE_SPARES` (1), `AGY_READABLE_IDLE_EXIT` (1800 s), `AGY_READABLE_HEDGE_AFTER` (8 s), `AGY_READABLE_STUCK_AFTER` (20 s), `AGY_READABLE_PART_WAIT` (10 s, how long to wait for a late piece of the answer).
+Environment variables override these and expose a few more: `AGY_READABLE_MODEL`, `AGY_READABLE_TIMEOUT`, `AGY_READABLE_REVIEW`, `AGY_READABLE_NOTES`, `AGY_READABLE_RETRIES`, `AGY_READABLE_KEEP`, `AGY_READABLE_AGY` (path to agy), `AGY_READABLE_BROWSER` (command that opens the sign-in page; `none` = link only), `AGY_READABLE_MIN_CHARS` (300), `AGY_READABLE_MAX_CHARS` (6000), `AGY_READABLE_REVIEWER`, `AGY_READABLE_REVIEW_MODEL` (opus), `AGY_READABLE_REVIEW_EFFORT` (low), `AGY_READABLE_CLAUDE` (path to claude), `AGY_READABLE_TRANSLATE`, `AGY_READABLE_CHUNK_CHARS` (4000, piece size for translating), `AGY_READABLE_TRANSLATE_MAX` (40000), `AGY_READABLE_DAEMON=0` (a one-shot `agy -p` per answer, nothing left running), `AGY_READABLE_SPARES` (1), `AGY_READABLE_IDLE_EXIT` (1800 s), `AGY_READABLE_HEDGE_AFTER` (8 s), `AGY_READABLE_STUCK_AFTER` (20 s), `AGY_READABLE_PART_WAIT` (10 s, how long to wait for a late piece of the answer).
 
 The instructions are in [`agy_readable/prompt_ko.txt`](agy_readable/prompt_ko.txt) (the free rewrite) and [`agy_readable/prompt_review_ko.txt`](agy_readable/prompt_review_ko.txt) (the second pass).
 
@@ -166,7 +179,9 @@ Logs and temporary files live in the plugin's data directory (`~/.claude/plugins
 ## Limits
 
 - Nothing is shown while Claude is still writing; the answer appears when it is complete.
-- Korean only: the prompt and the checks are written for Korean answers.
+- Korean is the only target: answers are rewritten or translated into Korean.
+- The second pass uses your Claude usage: one short Opus request per answer.
+- Translating short progress lines means they, too, appear a few seconds later.
 - The checks cannot tell values of the same kind trading places, or a changed meaning; the second pass fixes some of the latter, not all ([What is checked](#what-is-checked)).
 - Claude's stored answer is unchanged. Copying an answer, `/export` and the transcript give Claude's original text.
 - Two passes make the answer appear two to three times later than a plain polish would. A slow agy delays it by up to the timeout (60 s by default) before the original is shown.

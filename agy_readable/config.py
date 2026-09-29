@@ -35,6 +35,13 @@ RETRIES = opt("RETRIES", 1)  # a rewrite the checks reject is asked for again, t
 KEEP = opt("KEEP", 20)  # the last N originals and rewrites kept in <data dir>/samples for comparing; 0 = none
 MIN_CHARS = opt("MIN_CHARS", 300)
 MAX_CHARS = opt("MAX_CHARS", 6000)
+REVIEWER = opt("REVIEWER", "opus")  # who does the second pass: "opus" (claude -p, see reviewer.py) or "agy"
+REVIEW_MODEL = opt("REVIEW_MODEL", "opus")  # the Claude model for it; any name `claude --model` takes
+REVIEW_EFFORT = opt("REVIEW_EFFORT", "low")  # its effort level; "" = Claude Code's default
+CLAUDE = opt("CLAUDE", "claude")  # path to the Claude Code CLI
+TRANSLATE = opt("TRANSLATE", True)  # an answer with sentences in another language is translated into Korean
+CHUNK_CHARS = opt("CHUNK_CHARS", 4000)  # a longer answer is cut at blank lines and its pieces translated side by side
+TRANSLATE_MAX = opt("TRANSLATE_MAX", 40000)  # longer answers are shown as they are
 USE_DAEMON = opt("DAEMON", True)  # False: a one-shot `agy -p` per answer (slower, nothing left running)
 SPARES = opt("SPARES", 1)
 IDLE_EXIT = opt("IDLE_EXIT", 1800.0)  # the daemon stops, freeing its spare agy, after this long unused

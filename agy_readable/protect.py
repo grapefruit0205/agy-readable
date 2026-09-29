@@ -163,8 +163,9 @@ def clean(out):
     return out
 
 
-def restore(original, masked, spans, out):
-    """Check the model's rewrite of `masked` and put the protected parts back.
+def restore(original, masked, spans, out, ratio=(0.5, 2.0)):
+    """Check the model's rewrite of `masked` and put the protected parts back. `ratio`: the length the result
+    may have, as a share of the original's (a translation into Korean is often much shorter than English).
     Returns (text, None), or (None, why it cannot be shown)."""
     out = clean(out)
     if "```" in out or "~~~" in out:
@@ -188,7 +189,7 @@ def restore(original, masked, spans, out):
         return None, "코드 블록 순서가 바뀜"
 
     before, after = len(TOKEN_RE.sub("", masked).strip()), len(TOKEN_RE.sub("", out).strip())
-    if before >= 100 and not 0.5 <= after / before <= 2.0:
+    if before >= 100 and not ratio[0] <= after / before <= ratio[1]:
         return None, f"결과 길이가 비정상 ({before}→{after}자)"
 
     had, has = numbers(masked), numbers(out)
@@ -213,3 +214,25 @@ def restore(original, masked, spans, out):
 
     # one pass, so a ⟦n⟧ inside what was put back (the answer's own) is left as it is
     return re.sub(r"(?m)^[ \t]*⟦(\d+)⟧[ \t]*$|⟦(\d+)⟧", put_back, out), None
+
+
+def restore_loose(spans, out):
+    """Put the protected parts back into a translation the checks rejected, without checking: every
+    placeholder that is there gets its part back (a code block on a line of its own), and parts whose
+    placeholder was lost are added at the end, so nothing of the original's code, links or paths is lost."""
+    out = clean(out)
+    seen = set(TOKEN_RE.findall(out))
+
+    def put_back(m):
+        i = int(m.group(1) or m.group(2))
+        if i >= len(spans):  # a placeholder the model made up
+            return m.group(0)
+        if m.group(1):
+            return spans[i].text if spans[i].block else m.group(0).replace(TOKEN.format(i), spans[i].text)
+        return f"\n{spans[i].text}\n" if spans[i].block else spans[i].text
+
+    text = re.sub(r"(?m)^[ \t]*⟦(\d+)⟧[ \t]*$|⟦(\d+)⟧", put_back, out)
+    lost = [s.text for i, s in enumerate(spans) if str(i) not in seen]
+    if lost:
+        text = text.rstrip() + "\n\n_(번역에서 자리를 잃은 코드·링크·경로)_\n\n" + "\n\n".join(lost)
+    return text

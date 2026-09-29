@@ -15,6 +15,8 @@ with the port and a token in a file only the user can read (see endpoint()), and
   {"op": "ask", "prompt": str, "timeout": s, "model": str, "weight": n?} -> {"ok": true, "text": str, "warm": bool, ...}
   ("weight": how many prompt characters' worth of time the answer should take; default the prompt's length)
                                                              | {"ok": false, "error": str, "timed_out": bool}
+  {"op": "review", "prompt": str, "timeout": s} -> {"ok": true, "text": str, "warm": bool} | {"ok": false, "error": str, ...}
+  (the second pass by Claude: one waiting `claude -p` in stream-json mode is kept, see reviewer.py)
   {"op": "ping"} -> {"ok": true, "pid": int, "model": str, "auth_required": bool, "spares": [...]}
   {"op": "login_start", "auto": bool} -> {"ok": true, "url": str, "fresh": bool, "left": s} | {"ok": true, "already": true}
                                         | {"ok": false, "cooldown": true} | {"ok": false, "error": str}
@@ -43,7 +45,7 @@ import sys
 import threading
 import time
 
-from agy_readable import __version__, config, proc
+from agy_readable import __version__, config, proc, reviewer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPARE_MAX_AGE = 1200  # replace a spare that has waited this long; agy's sign-in token lives about an hour
@@ -330,6 +332,9 @@ class Daemon:
         self.login = None
         self.last_auto_login = 0.0
         self.token = None  # with TCP, what every request must carry
+        self.reviewers = []  # waiting `claude -p` workers for the second pass (config.REVIEWER == "opus")
+        self.reviewer_fails = 0
+        self.next_reviewer = 0.0
 
     def take(self):
         """The workers to send a request to: a ready spare, else the oldest starting one plus a fresh one."""
@@ -445,6 +450,61 @@ class Daemon:
             chars_out=len(res.get("text", "")), input_tokens=w.usage.get("input_tokens"),
             thinking_tokens=w.usage.get("thinking_tokens"), output_tokens=w.usage.get("output_tokens"))
         return res
+
+    def take_reviewer(self):
+        """A waiting Claude if there is one (warm), else a fresh one."""
+        with self.lock:
+            self.last_used = time.time()
+            ready = [w for w in self.reviewers if w.alive() and w.ready_at]
+            w = ready[0] if ready else None
+            if w:
+                self.reviewers.remove(w)
+            else:
+                w = reviewer.ClaudeWorker()
+            self.busy.add(w)
+            return w, bool(ready)
+
+    def handle_review(self, msg):
+        start = time.time()
+        timeout = float(msg.get("timeout", config.TIMEOUT))
+        try:
+            w, warm = self.take_reviewer()
+        except OSError as e:
+            return {"ok": False, "error": f"claude 실행 실패 ({e.strerror})"}
+        try:
+            res = {"ok": True, "text": w.ask(msg["prompt"], timeout)}
+        except TimeoutError:
+            res = {"ok": False, "error": "claude 응답 시간 초과", "timed_out": True}
+        except Exception as e:
+            res = {"ok": False, "error": str(e)[:300]}
+        w.retire()
+        with self.lock:
+            self.busy.discard(w)
+            self.reviewer_fails = 0 if res["ok"] else self.reviewer_fails + 1
+            self.next_reviewer = 0.0 if res["ok"] else time.time() + BACKOFF[min(self.reviewer_fails, len(BACKOFF)) - 1]
+        res = dict(res, warm=warm, seconds=round(time.time() - start, 1))
+        log(op="review", worker=w.p.pid, model=config.REVIEW_MODEL, **{k: v for k, v in res.items() if k != "text"},
+            chars_out=len(res.get("text", "")))
+        return res
+
+    def keep_reviewer(self, now):
+        """Under self.lock: keep one Claude waiting for the second pass, recycled like agy's spares."""
+        for w in list(self.reviewers):
+            if not w.alive():
+                self.reviewers.remove(w)
+                self.reviewer_fails += 1
+                self.next_reviewer = now + BACKOFF[min(self.reviewer_fails, len(BACKOFF)) - 1]
+                log(reviewer=w.p.pid, died_idle=True, code=w.p.returncode, err="".join(w.err)[-200:])
+            elif now - w.born > SPARE_MAX_AGE:
+                self.reviewers.remove(w)
+                w.retire()
+        if config.REVIEWER == "opus" and config.REVIEW and not self.reviewers and now >= self.next_reviewer:
+            try:
+                self.reviewers.append(reviewer.ClaudeWorker())
+            except OSError as e:  # claude not installed
+                self.reviewer_fails += 1
+                self.next_reviewer = now + BACKOFF[min(self.reviewer_fails, len(BACKOFF)) - 1]
+                log(reviewer_spawn_error=str(e))
 
     def signed_out(self):
         with self.lock:
@@ -565,6 +625,7 @@ class Daemon:
                     else:
                         self.spares.append(w)
                         log(worker=w.p.pid, spawned=True, hedge=bool(starting))
+                self.keep_reviewer(now)
                 idle = not self.busy and now - self.last_used > config.IDLE_EXIT
             if idle:
                 log(idle_exit=True)
@@ -578,7 +639,7 @@ class Daemon:
             pass
         self.lock_file.close()  # after the unlink, so a successor never has its fresh socket deleted by us
         with self.lock:
-            for w in self.spares + list(self.busy):
+            for w in self.spares + self.reviewers + list(self.busy):
                 w.retire(grace=1.0)
             if self.login:
                 self.login.kill()
@@ -599,6 +660,8 @@ class Daemon:
                     return  # some other local program on the TCP port
                 if msg.get("op") == "ask":
                     res = self.handle_ask(msg)
+                elif msg.get("op") == "review":
+                    res = self.handle_review(msg)
                 elif msg.get("op") == "ping":
                     with self.lock:
                         res = {"ok": True, "pid": os.getpid(), "version": __version__, "model": self.model,
@@ -606,7 +669,9 @@ class Daemon:
                                "busy": len(self.busy), "auth_required": self.auth_required,
                                "login": self.login.state() if self.login else None,
                                "spares": [{"pid": w.p.pid, "ready": bool(w.ready_at), "age": round(time.time() - w.born, 1)}
-                                          for w in self.spares]}
+                                          for w in self.spares],
+                               "reviewers": [{"pid": w.p.pid, "ready": bool(w.ready_at), "age": round(time.time() - w.born, 1)}
+                                             for w in self.reviewers]}
                 elif msg.get("op") == "login_start":
                     res = self.login_start(bool(msg.get("auto")))
                 elif msg.get("op") == "login_code":

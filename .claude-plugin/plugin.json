@@ -1,8 +1,8 @@
 {
   "name": "agy-readable",
   "displayName": "agy-readable",
-  "version": "0.5.0",
-  "description": "Rebuild Claude's hard-to-read Korean answers into plain, clearly structured Korean with agy (Antigravity CLI), on your own Antigravity sign-in, then have agy check the rewrite against the original and fix what it added. Code, numbers, paths, links and marks such as 추정 are checked to come through; otherwise the original is shown.",
+  "version": "0.6.0",
+  "description": "Rebuild Claude's hard-to-read Korean answers into plain, clearly structured Korean with agy (Antigravity CLI), on your own Antigravity sign-in, then have Claude (Opus) check the rewrite against the original and fix what it added. Answers with sentences in another language are translated into plain Korean instead. Code, numbers, paths, links and marks such as 추정 are checked to come through.",
   "author": {
     "name": "Junseok Pak",
     "url": "https://github.com/grapefruit0205"
@@ -10,7 +10,7 @@
   "homepage": "https://github.com/grapefruit0205/agy-readable",
   "repository": "https://github.com/grapefruit0205/agy-readable",
   "license": "MIT",
-  "keywords": ["korean", "readability", "antigravity", "agy", "gemini", "message-display", "hooks"],
+  "keywords": ["korean", "readability", "translation", "antigravity", "agy", "gemini", "message-display", "hooks"],
   "userConfig": {
     "model": {
       "type": "string",
@@ -35,6 +35,13 @@
       "default": true,
       "required": false
     },
+    "reviewer": {
+      "type": "string",
+      "title": "Second pass by",
+      "description": "Who checks agy's rewrite against the original: `opus` (Claude Opus through the Claude Code CLI, with your Claude Code sign-in; one Claude is kept waiting) or `agy`.",
+      "default": "opus",
+      "required": false
+    },
     "notes": {
       "type": "boolean",
       "title": "Show skip notes",
@@ -49,6 +56,13 @@
       "default": 1,
       "min": 0,
       "max": 3,
+      "required": false
+    },
+    "translate": {
+      "type": "boolean",
+      "title": "Translate other languages into Korean",
+      "description": "An answer with sentences in another language (English progress lines, say) is translated into plain Korean, whatever its length. A translation that fails a check is still shown, with a note, rather than the original.",
+      "default": true,
       "required": false
     },
     "keep": {

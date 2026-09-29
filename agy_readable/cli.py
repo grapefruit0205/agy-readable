@@ -45,13 +45,17 @@ def ping():
 
 def describe(entry):
     when = time.strftime("%m-%d %H:%M:%S", time.localtime(entry.get("t", 0)))
-    if entry.get("outcome") == "refined":
+    label = {"refined": "다듬음  ", "translated": "번역    ", "translated_loose": "번역(경고)"}.get(entry.get("outcome"))
+    if label:
         again = f"  다시 시도 {entry['retries']}" if entry.get("retries") else ""
-        checked = f"  고치기: {entry['review']}" if entry.get("review") else ""
+        checked = f"  고치기: {entry['review']}" if entry.get("review") and entry.get("mode") != "translate" else ""
+        if entry.get("mode") == "translate" and entry.get("review", "번역") != "번역":
+            checked = f"  {entry['review']}"  # 번역 N조각
         if len(entry.get("stages") or []) > 1:  # e.g. 12.3+4.1s
             checked += f"  ({'+'.join(f'{s:g}' for s in entry['stages'])}s)"
-        return (f"{when}  다듬음   {entry.get('chars')}→{entry.get('out')}자  {entry.get('seconds')}s  "
-                f"({entry.get('via')}){again}{checked}")
+        warn = f"  {entry['reason']}" if entry.get("outcome") == "translated_loose" else ""
+        return (f"{when}  {label} {entry.get('chars')}→{entry.get('out')}자  {entry.get('seconds')}s  "
+                f"({entry.get('via')}){again}{checked}{warn}")
     if entry.get("outcome") == "skipped":
         return f"{when}  건너뜀   {entry.get('chars')}자  ({entry.get('reason')})"
     if entry.get("outcome"):
@@ -81,7 +85,7 @@ def samples():
         return
     for i, s in enumerate(kept, 1):
         when = time.strftime("%m-%d %H:%M:%S", time.localtime(s.get("t", 0)))
-        state = "다듬음" if s.get("outcome") == "refined" else f"버림({s.get('reason')})"
+        state = {"refined": "다듬음", "translated": "번역"}.get(s.get("outcome")) or f"버림({s.get('reason')})"
         print(f"{i:3d}  {when}  {s.get('model')}  시도 {s.get('attempt', 0) + 1}  "
               f"{len(s.get('before', ''))}→{len(s.get('after', ''))}자  {state}")
 
@@ -93,7 +97,7 @@ def diff(n):
         return 1
     s = kept[n - 1]
     print(f"# {s.get('model')}  시도 {s.get('attempt', 0) + 1}  "
-          f"{'다듬음' if s.get('outcome') == 'refined' else '버림: ' + str(s.get('reason'))}"
+          f"{ {'refined': '다듬음', 'translated': '번역'}.get(s.get('outcome')) or '버림: ' + str(s.get('reason'))}"
           + (f"  고치기: {s['review']}" if s.get("review") else ""))
     if s.get("masked"):
         print("# 버린 글은 agy가 쓴 그대로라, 코드·링크·경로가 ⟦숫자⟧ 표시로 남아 있습니다")
@@ -109,13 +113,18 @@ def status():
     print(f"  data dir   {config.data_dir()}")
     print(f"  agy        {agy or '찾을 수 없음 (' + config.AGY + ')'}")
     print(f"  model      {config.MODEL}   timeout {config.TIMEOUT:g}s   notes {'on' if config.NOTES else 'off'}"
-          f"   review {'on' if config.REVIEW else 'off'}   retries {config.RETRIES}   keep {config.KEEP}")
+          f"   review {('claude ' + config.REVIEW_MODEL if config.REVIEWER == 'opus' else config.REVIEWER) if config.REVIEW else 'off'}"
+          f"   retries {config.RETRIES}   keep {config.KEEP}"
+          f"   translate {'on' if config.TRANSLATE else 'off'}")
     p = ping()
     if p and p.get("auth_required"):
         print("  sign-in    Antigravity 로그인 필요: `agy-readable login`")
     if p:
         spares = ", ".join(f"{s['pid']} {'ready' if s['ready'] else 'starting'} {s['age']:.0f}s" for s in p["spares"])
         print(f"  daemon     pid {p['pid']}  model {p.get('model')}  spares [{spares}]  busy {p['busy']}  fails {p['fails']}")
+        if p.get("reviewers") is not None:
+            waiting = ", ".join(f"{r['pid']} {'ready' if r['ready'] else 'starting'} {r['age']:.0f}s" for r in p["reviewers"])
+            print(f"  reviewer   claude [{waiting}]")
     else:
         print("  daemon     not running (starts with the next answer)")
     entries = [e for e in read_log("hook.log", 200) if e.get("outcome")][-10:]

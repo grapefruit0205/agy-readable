@@ -256,8 +256,9 @@ class HookTest(unittest.TestCase):
 
     def test_left_as_is(self):
         self.assertEqual(self.hook("짧은 답"), "짧은 답")
+        self.assertEqual(self.hook("(keep-alive)"), "(keep-alive)")  # one word is not a sentence to translate
         english = "This answer has no Korean at all. " * 20
-        self.assertEqual(self.hook(english), english)
+        self.assertEqual(self.hook(english, AGY_READABLE_TRANSLATE="0"), english)
         code = "코드:\n```python\n" + "print('x')\n" * 60 + "```\n"
         self.assertEqual(self.hook(code), code)
 

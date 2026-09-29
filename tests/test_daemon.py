@@ -285,7 +285,7 @@ class DaemonTest(unittest.TestCase):
         self.assertIn("캐시를 먼저 확인하고", out)
         entry = self.last_hook()
         self.assertEqual((entry["outcome"], entry["review"]), ("refined", "고침 1"))
-        self.assertRegex(entry["via"], r"^warm,review:(warm|cold)")
+        self.assertRegex(entry["via"], r"^warm,review:(opus-)?(warm|cold)")
         asks = [e for e in self.daemon_log() if e.get("op") == "ask"][-2:]
         self.assertTrue(all(e["ok"] for e in asks))
         self.assertNotEqual(asks[0]["worker"], asks[1]["worker"])
