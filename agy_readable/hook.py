@@ -33,7 +33,7 @@ import sys
 import threading
 import time
 
-from agy_readable import config, daemon, lang, login, proc, protect, review, reviewer
+from agy_readable import config, context, daemon, lang, login, proc, protect, review, reviewer
 
 PROMPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_ko.txt")
 TRANSLATE_PROMPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompt_translate_ko.txt")
@@ -216,34 +216,37 @@ def with_feedback(base, why, did="다듬은", redo="다듬되"):
     return head + note + "\n" + sep + tail if sep else base + note + "\n"
 
 
-def ask_reviewer(prompt, budget):
+def ask_reviewer(prompt, budget, main_model=None):
     """The second pass's request: to Claude (reviewer.py) through the daemon, else one-shot; or to agy when
-    config.REVIEWER is "agy". Returns (answer or None, reason when None, how it ran)."""
-    if config.REVIEWER != "opus":
+    config.REVIEWER is "agy". `main_model`: the conversation's model (context.read), for REVIEW_MODEL "main".
+    Returns (answer or None, reason when None, how it ran)."""
+    if not config.CLAUDE_REVIEWS:
         out, why, how = ask_agy(prompt, budget, weight=len(prompt) // 4)  # a long prompt, but only a few lines back
         return out, why, how
+    model = reviewer.model_for(main_model)
     start = time.time()
     if config.USE_DAEMON and daemon.ensure_running(wait=2.0):
         try:
-            r = daemon.call({"op": "review", "prompt": prompt, "timeout": budget - (time.time() - start)}, budget + 5)
-            how = "opus-" + ("warm" if r.get("warm") else "cold")
+            r = daemon.call({"op": "review", "prompt": prompt, "model": model,
+                             "timeout": budget - (time.time() - start)}, budget + 5)
+            how = "claude-" + ("warm" if r.get("warm") else "cold")
             return (r["text"], None, how) if r.get("ok") else (None, r.get("error"), how)
         except (OSError, ValueError) as e:
             log(daemon_error=repr(e)[-200:])
     left = budget - (time.time() - start)
     if left < 5:
-        return None, "claude 응답 시간 초과", "opus-oneshot"
-    return (*reviewer.one_shot(prompt, left), "opus-oneshot")
+        return None, "claude 응답 시간 초과", "claude-oneshot"
+    return (*reviewer.one_shot(prompt, left, model), "claude-oneshot")
 
 
-def second_pass(text, masked, spans, draft, budget, translated=False, ratio=(0.5, 2.0)):
-    """The reviewer checks the rewrite `draft` (masked) against the original and fixes what is off (review.py).
-    Returns (the fixed text, restored, or None; what happened, for the log; how it ran or None;
+def second_pass(text, masked, spans, draft, budget, translated=False, ratio=(0.5, 2.0), ctx="", main_model=None):
+    """The reviewer checks the rewrite `draft` (masked) against the original and fixes what is off (review.py),
+    with the conversation so far (`ctx`, context.read) before the request. Returns (the fixed text, restored, or None; what happened, for the log; how it ran or None;
     the reviewer's answer, masked, or None)."""
-    prompt, lines, us, n = review.build(text, masked, draft, translated, always=config.REVIEWER == "opus")
+    prompt, lines, us, n = review.build(text, masked, draft, translated, always=config.CLAUDE_REVIEWS)
     if prompt is None:
         return None, "후보 없음", None, None
-    out, why, how = ask_reviewer(prompt, budget)
+    out, why, how = ask_reviewer(ctx + prompt, budget, main_model)
     if out is None:
         return None, f"실패: {why}", how, None
     fixed, done, bad = review.apply(lines, us, protect.clean(out))
@@ -271,7 +274,7 @@ def base_prompt(kind):
     return base
 
 
-def rewrite(text, msg="", kind="rewrite", end=None):
+def rewrite(text, msg="", kind="rewrite", end=None, ctx="", main_model=None):
     """`kind`: "rewrite" (a Korean answer), "both" (translate and rewrite at once) or "translate" (faithful).
     Returns (text or None, why, how agy ran, retries used, what the second pass did, seconds each request took,
     loose). `loose`: a translation the checks rejected every time, shown anyway (protect.restore_loose) with
@@ -281,7 +284,8 @@ def rewrite(text, msg="", kind="rewrite", end=None):
     back (FIXABLE). One the checks still reject is asked for again, told what was wrong, up to config.RETRIES
     times, while the time left is enough for another attempt as slow as the last; all requests share
     config.TIMEOUT (or `end`). When agy itself fails there is no retry here: the daemon has already raced
-    other workers."""
+    other workers. `ctx`: the conversation so far (context.read), put before the instructions of every request;
+    the checks still hold the rewrite to `text` alone."""
     masked, spans = protect.mask(text)
     base = base_prompt(kind)
     translated = kind != "rewrite"
@@ -294,7 +298,7 @@ def rewrite(text, msg="", kind="rewrite", end=None):
         began = time.time()
         prompt = with_feedback(base, rejected[-1], did, redo) if rejected else base
         # a free rewrite takes about twice as long as the daemon's default expects for a prompt this size
-        out, why, how = ask_agy(prompt + masked, left(), weight=2 * len(prompt + masked))
+        out, why, how = ask_agy(ctx + prompt + masked, left(), weight=2 * len(prompt + masked) + len(ctx) // 4)
         hows.append(how)
         stages.append(round(time.time() - began, 1))
         if out is None:
@@ -305,7 +309,8 @@ def rewrite(text, msg="", kind="rewrite", end=None):
             note = "꺼짐" if not config.REVIEW else "시간 부족" if left() < REVIEW_MIN_LEFT else None
             if note is None:
                 t = time.time()
-                fixed, note, rhow, fixes = second_pass(text, masked, spans, draft, left(), translated, ratio)
+                fixed, note, rhow, fixes = second_pass(text, masked, spans, draft, left(), translated, ratio,
+                                                       ctx, main_model)
                 if rhow:
                     hows.append("review:" + rhow)
                     stages.append(round(time.time() - t, 1))
@@ -329,7 +334,7 @@ def rewrite(text, msg="", kind="rewrite", end=None):
     return None, f"{rejected[0]} · 다시 시도: {why}", ",".join(hows), retries, note, stages, False
 
 
-def translate(text, msg=""):
+def translate(text, msg="", ctx="", main_model=None):
     """A long answer, or one mostly code, translated faithfully in pieces (lang.chunks), all at once, sharing
     config.TIMEOUT; each piece gets its own second pass. Returns what rewrite() does, `why` naming the pieces
     that failed or were shown loose."""
@@ -339,7 +344,7 @@ def translate(text, msg=""):
 
     def run(i):
         try:
-            results[i] = rewrite(pieces[i], msg, "translate", end)
+            results[i] = rewrite(pieces[i], msg, "translate", end, ctx, main_model)
         except Exception as e:  # one piece failing must not take the others with it
             results[i] = (None, f"오류 {e!r}"[:200], "", 0, None, [], False)
 
@@ -390,14 +395,19 @@ def finish(event, full):
     translating = mode != "rewrite"
     if not shutil.which(config.AGY):
         why, refined, how, retries, note, stages, loose = f"agy를 찾을 수 없음 ({config.AGY})", None, None, 0, None, [], False
-        seconds = 0.0
+        seconds, ctx, main_model = 0.0, "", None
     else:
         start = time.time()
         msg = event["message_id"][:8]
+        try:
+            ctx, main_model = context.read(event.get("transcript_path"), full)
+        except Exception as e:  # the context is a help; never let it keep the answer from being rewritten
+            log(msg=msg, context_error=repr(e)[-200:])
+            ctx, main_model = "", None
         if mode == "translate_pieces":
-            refined, why, how, retries, note, stages, loose = translate(full, msg)
+            refined, why, how, retries, note, stages, loose = translate(full, msg, ctx, main_model)
         else:
-            refined, why, how, retries, note, stages, loose = rewrite(full, msg, mode)
+            refined, why, how, retries, note, stages, loose = rewrite(full, msg, mode, None, ctx, main_model)
         seconds = round(time.time() - start, 1)
     if refined is None:
         outcome = "fallback"
@@ -406,7 +416,8 @@ def finish(event, full):
     else:
         outcome = "refined"
     log(msg=event["message_id"][:8], parts=event.get("index", 0) + 1, chars=len(full), out=len(refined or ""),
-        seconds=seconds, stages=stages, via=how, retries=retries, review=note, mode=mode,
+        seconds=seconds, stages=stages, via=how, retries=retries, review=note, mode=mode, context=len(ctx),
+        review_model=reviewer.model_for(main_model) if config.CLAUDE_REVIEWS and config.REVIEW else None,
         outcome=outcome, reason=why)
     if refined:
         if why and config.NOTES:  # a translation shown although a check or a piece failed

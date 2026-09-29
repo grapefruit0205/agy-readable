@@ -88,14 +88,26 @@ Claude가 답을 쓰는 동안에는 답변이 보이지 않습니다. 다 쓰�
 - 늦게 오는 조각은 최대 10초까지 기다린 뒤에 빠졌다고 판단합니다.
 
 
-## 두 번째 단계는 Claude(Opus)
+## 두 번째 단계는 Claude
 
-0.6.0부터 두 번째 단계(원문과 맞춰 고치기)는 agy가 아니라 Claude(Opus)가 합니다. agy가 다듬고, Claude가 원문과 다듬은 글을 한 문장씩 맞춰 본 뒤 고칠 줄만 돌려주고, 그 결과에 평소 검사를 합니다.
+0.6.0부터 두 번째 단계(원문과 맞춰 고치기)는 agy가 아니라 Claude가 합니다. agy가 다듬고, Claude가 원문과 다듬은 글을 한 문장씩 맞춰 본 뒤 고칠 줄만 돌려주고, 그 결과에 평소 검사를 합니다.
 
-- 이 컴퓨터의 Claude Code 로그인으로 `claude -p --model opus --effort low`를 씁니다.
+- 이 컴퓨터의 Claude Code 로그인으로 `claude -p --model <모델> --effort low`를 씁니다.
+- 0.6.1부터 모델은 지금 대화가 쓰는 모델을 따릅니다(세션 기록에서 읽음, 못 읽으면 Opus). `review_model`로 다른 모델을 정할 수 있습니다.
+- 0.6.1부터 반말(~다)로 끝난 문장도 존댓말(~습니다)로 고칩니다.
 - 도구·설정 파일(플러그인·훅·MCP 서버)·CLAUDE.md·자동 메모리 없이, 세션도 남기지 않고, 빈 폴더에서 실행합니다. 그래서 이 플러그인의 훅이 그 안에서 다시 돌지 않습니다.
 - 데몬이 Claude 하나를 미리 띄워 두어, 검증 한 번에 약 3.5–4.5초 걸립니다.
-- 답변마다 짧은 Opus 요청이 한 번씩 가므로 Claude 사용량에 들어갑니다. `reviewer`를 `agy`로 바꾸면 0.4–0.5의 agy 두 번째 단계를 씁니다.
+- 답변마다 짧은 Claude 요청이 한 번씩 가므로 Claude 사용량에 들어갑니다. `reviewer`를 `agy`로 바꾸면 0.4–0.5의 agy 두 번째 단계를 씁니다.
+
+## 앞선 대화도 함께
+
+0.6.1부터 agy와 두 번째 단계는 답변 앞의 대화도 함께 받습니다. 답변이 앞에서 나온 용어나 단계를 가리킬 때 뜻대로 읽게 하려는 것입니다.
+
+- **넘기는 것:** 사용자 메시지와 Claude가 화면에 보인 답변만. 최근 것부터 1만 자까지(`context_chars`), 메시지 하나는 2,000자까지.
+- **안 넘기는 것:** 도구 호출과 그 결과(파일 내용, 명령 출력), 시스템 안내문, 압축된 대화 요약, 하위 에이전트 메시지.
+- 코드·링크·경로는 `[코드]`로 가립니다. Claude Code가 훅에 알려 주는 세션 기록 파일에서 읽습니다.
+- agy에는 "이해하는 데만 쓰고, 대화에만 있는 내용을 답변에 넣지 말라"고 지시하고, 검사는 여전히 답변 원문만 기준으로 합니다.
+- agy로 가는 글은 Google(Gemini)로 갑니다. 보내고 싶지 않으면 `context_chars`를 0으로 두세요.
 
 ## 번역
 
@@ -208,7 +220,9 @@ Flash High는 문장만 다듬는 데도 5,354자 답변에 43.7초와 84.4초�
 | `model` | `gemini-3.8-flash-low` | 다시 쓸 때 쓰는 모델. `agy models`로 목록을 봅니다. |
 | `timeout` | `60` | 두 단계를 합쳐 agy를 기다리는 시간(초). 넘으면 원문을 보여 줍니다. |
 | `review` | `true` | 두 번째 단계(원문과 맞춰 고치기). 끄면 빠르지만 원문에 없는 말을 고치지 않습니다. |
-| `reviewer` | `opus` | 두 번째 단계를 누가 할지: `opus`(Claude Code CLI로 Claude) 또는 `agy` |
+| `reviewer` | `claude` | 두 번째 단계를 누가 할지: `claude`(Claude Code CLI, `opus`도 됨) 또는 `agy` |
+| `review_model` | `main` | 그 Claude 모델: `main` = 지금 대화의 모델, 또는 `claude --model`이 받는 이름(`claude-sonnet-5-5` 등) |
+| `context_chars` | `10000` | 답변과 함께 넘기는 앞선 대화 글자 수. 0 = 안 넘김 |
 | `notes` | `true` | 원문을 보여 줄 때 붙는 한 줄 설명 |
 | `retries` | `1` | 검사에 걸린 글을 틀린 점을 알려 주고 다시 쓰게 하는 횟수. `0`이면 바로 원문 |
 | `keep` | `20` | 원문과 다시 쓴 글을 비교용으로 남겨 둘 개수. `0`이면 남기지 않음 |
@@ -220,7 +234,7 @@ Flash High는 문장만 다듬는 데도 5,354자 답변에 43.7초와 84.4초�
 - `AGY_READABLE_AGY`: agy 경로
 - `AGY_READABLE_BROWSER`: 로그인 페이지를 여는 명령 (`none`이면 링크만 표시)
 - `AGY_READABLE_MIN_CHARS` (300), `AGY_READABLE_MAX_CHARS` (6000)
-- `AGY_READABLE_REVIEWER`, `AGY_READABLE_REVIEW_MODEL` (opus), `AGY_READABLE_REVIEW_EFFORT` (low), `AGY_READABLE_CLAUDE` (claude 경로)
+- `AGY_READABLE_REVIEWER`, `AGY_READABLE_REVIEW_MODEL` (main), `AGY_READABLE_CONTEXT_CHARS` (10000), `AGY_READABLE_CONTEXT_MESSAGE_CHARS` (2000), `AGY_READABLE_REVIEW_EFFORT` (low), `AGY_READABLE_CLAUDE` (claude 경로)
 - `AGY_READABLE_TRANSLATE`, `AGY_READABLE_CHUNK_CHARS` (4000, 번역할 때 나누는 조각 크기), `AGY_READABLE_TRANSLATE_MAX` (40000)
 - `AGY_READABLE_DAEMON=0`: 답변마다 일회성 `agy -p`를 실행하고, 백그라운드에 아무것도 남기지 않음
 - `AGY_READABLE_SPARES` (1), `AGY_READABLE_IDLE_EXIT` (1800초), `AGY_READABLE_HEDGE_AFTER` (8초), `AGY_READABLE_STUCK_AFTER` (20초)

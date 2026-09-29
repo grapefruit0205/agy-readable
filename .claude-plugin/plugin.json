@@ -1,7 +1,7 @@
 {
   "name": "agy-readable",
   "displayName": "agy-readable",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Rebuild Claude's hard-to-read Korean answers into plain, clearly structured Korean with agy (Antigravity CLI), on your own Antigravity sign-in, then have Claude (Opus) check the rewrite against the original and fix what it added. Answers with sentences in another language are translated into plain Korean instead. Code, numbers, paths, links and marks such as 추정 are checked to come through.",
   "author": {
     "name": "Junseok Pak",
@@ -10,7 +10,16 @@
   "homepage": "https://github.com/grapefruit0205/agy-readable",
   "repository": "https://github.com/grapefruit0205/agy-readable",
   "license": "MIT",
-  "keywords": ["korean", "readability", "translation", "antigravity", "agy", "gemini", "message-display", "hooks"],
+  "keywords": [
+    "korean",
+    "readability",
+    "translation",
+    "antigravity",
+    "agy",
+    "gemini",
+    "message-display",
+    "hooks"
+  ],
   "userConfig": {
     "model": {
       "type": "string",
@@ -31,15 +40,31 @@
     "review": {
       "type": "boolean",
       "title": "Check the rewrite against the original",
-      "description": "Second pass: agy compares its rewrite with the original, sentence by sentence, and fixes what it added or changed. Off is faster but leaves those.",
+      "description": "Second pass: Claude (or agy, see Second pass by) compares agy's rewrite with the original, sentence by sentence, and fixes what it added or changed. Off is faster but leaves those.",
       "default": true,
       "required": false
     },
     "reviewer": {
       "type": "string",
       "title": "Second pass by",
-      "description": "Who checks agy's rewrite against the original: `opus` (Claude Opus through the Claude Code CLI, with your Claude Code sign-in; one Claude is kept waiting) or `agy`.",
-      "default": "opus",
+      "description": "Who checks agy's rewrite against the original: `claude` (through the Claude Code CLI, with your Claude Code sign-in; one Claude is kept waiting) or `agy`. `opus` works too, as in 0.6.0.",
+      "default": "claude",
+      "required": false
+    },
+    "review_model": {
+      "type": "string",
+      "title": "Second pass model",
+      "description": "The Claude model that checks the rewrite: `main` follows the model your conversation runs on (Opus when it cannot be read), or any name `claude --model` takes (`opus`, `claude-sonnet-5-5`, ...).",
+      "default": "main",
+      "required": false
+    },
+    "context_chars": {
+      "type": "number",
+      "title": "Conversation given with the answer (characters)",
+      "description": "agy and the second pass also get the conversation so far, newest first up to this many characters: your messages and Claude's answers only, with code, links and paths masked. Tool calls and their output never go. 0 sends none.",
+      "default": 10000,
+      "min": 0,
+      "max": 50000,
       "required": false
     },
     "notes": {

@@ -24,8 +24,18 @@ SYSTEM = ("너는 다른 모델이 다시 쓰거나 번역한 한국어 글을 �
 AUTH_HINTS = ("not logged in", "/login", "invalid api key", "authentication", "oauth")
 
 
-def command(stream):
-    args = [shutil.which(config.CLAUDE) or config.CLAUDE, "-p", "--model", config.REVIEW_MODEL,
+FALLBACK_MODEL = "opus"  # when REVIEW_MODEL is "main" and the main model is not known
+
+
+def model_for(main=None):
+    """The model name to run: REVIEW_MODEL, or with "main" the conversation's model (`main`)."""
+    if config.REVIEW_MODEL != "main":
+        return config.REVIEW_MODEL
+    return main or FALLBACK_MODEL
+
+
+def command(stream, model=None):
+    args = [shutil.which(config.CLAUDE) or config.CLAUDE, "-p", "--model", model or model_for(),
             "--tools", "", "--no-session-persistence", "--setting-sources", "", "--strict-mcp-config",
             "--disable-slash-commands", "--system-prompt", SYSTEM]
     if config.REVIEW_EFFORT:
@@ -51,10 +61,10 @@ def signed_out(text):
     return any(h in (text or "").lower() for h in AUTH_HINTS)
 
 
-def one_shot(prompt, timeout):
+def one_shot(prompt, timeout, model=None):
     """Returns (Claude's answer or None, reason when None)."""
     try:
-        p = subprocess.Popen(command(False) + [prompt], cwd=cwd(), env=env(), stdin=subprocess.DEVNULL,
+        p = subprocess.Popen(command(False, model) + [prompt], cwd=cwd(), env=env(), stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
                              errors="replace", **proc.detached())
     except OSError as e:
@@ -76,10 +86,11 @@ class ClaudeWorker:
     until it gets its first message, so a worker counts as ready once it has stayed up for a moment."""
     SETTLE = 1.5  # seconds: a claude that fails at start (no sign-in, bad model) has exited by then
 
-    def __init__(self):
+    def __init__(self, model=None):
+        self.model = model or model_for()
         self.born = time.time()
         self.events = queue.Queue()
-        self.p = subprocess.Popen(command(True), cwd=cwd(), env=env(), stdin=subprocess.PIPE,
+        self.p = subprocess.Popen(command(True, self.model), cwd=cwd(), env=env(), stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
                                   errors="replace", **proc.detached())
         self.err = []

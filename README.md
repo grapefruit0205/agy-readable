@@ -56,7 +56,11 @@ If a piece of the answer never reaches the hook (Claude Code runs up to three di
 
 ## Claude as the second pass
 
-Since 0.6.0 the second pass is done by Claude (Opus), not agy: agy rewrites, Claude reads the original and the rewrite sentence by sentence and sends back only the lines to change, and the usual checks run on the result. It runs headless on the Claude Code sign-in already on your computer (`claude -p --model opus --effort low`), with no tools, no settings sources (so no plugins, hooks or MCP servers; this plugin's hook cannot run inside it), no CLAUDE.md, no auto-memory, no saved session and an empty working directory. The daemon keeps one Claude waiting, so a check takes about 3.5-4.5 s. It counts against your Claude usage like any `claude -p` request. Set `reviewer` to `agy` for the agy second pass of 0.4-0.5.
+Since 0.6.0 the second pass is done by Claude, not agy: agy rewrites, Claude reads the original and the rewrite sentence by sentence and sends back only the lines to change, and the usual checks run on the result. It runs headless on the Claude Code sign-in already on your computer (`claude -p --model <model> --effort low`; since 0.6.1 the model is the one your conversation runs on, read from the session transcript, Opus when it cannot be read; `review_model` sets another), with no tools, no settings sources (so no plugins, hooks or MCP servers; this plugin's hook cannot run inside it), no CLAUDE.md, no auto-memory, no saved session and an empty working directory. The daemon keeps one Claude waiting, so a check takes about 3.5-4.5 s. It counts against your Claude usage like any `claude -p` request. Set `reviewer` to `agy` for the agy second pass of 0.4-0.5. Since 0.6.1 it also fixes sentences left in the plain form (~다) to the polite form (~습니다).
+
+## The conversation so far
+
+Since 0.6.1 agy and the second pass also get the conversation before the answer, so a term or a step the answer refers back to reads as it was meant. Only the conversation text goes: your messages and the answers Claude showed, newest first, up to 10,000 characters (`context_chars`), each message cut to 2,000. Tool calls and their output (file contents, command output), system reminders, a compacted conversation's summary and subagents' messages never go. Code, links and paths in it are masked as `[코드]`. It is read from the session transcript Claude Code names in the hook input. agy is told to use it only to understand the answer and never to add what is only in it, and the checks still hold the rewrite to the answer alone. What goes to agy goes to Google (Gemini); set `context_chars` to 0 to send none.
 
 ## Translation
 
@@ -143,13 +147,15 @@ Set at install time, or later with `/plugin` → agy-readable → configure:
 | `model` | `gemini-3.8-flash-low` | Model agy rewrites with. `agy models` lists them. |
 | `timeout` | `60` | Seconds to wait for agy, both passes together, before showing the original. |
 | `review` | `true` | The second pass (checking the rewrite against the original). Off is faster but leaves anything the rewrite added. |
-| `reviewer` | `opus` | Who does the second pass: `opus` (Claude, through the Claude Code CLI) or `agy`. |
+| `reviewer` | `claude` | Who does the second pass: `claude` (through the Claude Code CLI; `opus` works too) or `agy`. |
+| `review_model` | `main` | The Claude model for it: `main` = your conversation's model, or any name `claude --model` takes (`claude-sonnet-5-5`, ...). |
+| `context_chars` | `10000` | The conversation so far given with the answer, in characters; 0 = none. |
 | `notes` | `true` | The one-line note under an answer shown unrewritten. |
 | `retries` | `1` | How many times a rewrite that fails a check is asked for again, with what was wrong. `0` = show the original at once. |
 | `keep` | `20` | How many originals and rewrites to keep for comparing. `0` = keep none. |
 | `translate` | `true` | Translate answers with sentences in another language into Korean. Off leaves them as they are. |
 
-Environment variables override these and expose a few more: `AGY_READABLE_MODEL`, `AGY_READABLE_TIMEOUT`, `AGY_READABLE_REVIEW`, `AGY_READABLE_NOTES`, `AGY_READABLE_RETRIES`, `AGY_READABLE_KEEP`, `AGY_READABLE_AGY` (path to agy), `AGY_READABLE_BROWSER` (command that opens the sign-in page; `none` = link only), `AGY_READABLE_MIN_CHARS` (300), `AGY_READABLE_MAX_CHARS` (6000), `AGY_READABLE_REVIEWER`, `AGY_READABLE_REVIEW_MODEL` (opus), `AGY_READABLE_REVIEW_EFFORT` (low), `AGY_READABLE_CLAUDE` (path to claude), `AGY_READABLE_TRANSLATE`, `AGY_READABLE_CHUNK_CHARS` (4000, piece size for translating), `AGY_READABLE_TRANSLATE_MAX` (40000), `AGY_READABLE_DAEMON=0` (a one-shot `agy -p` per answer, nothing left running), `AGY_READABLE_SPARES` (1), `AGY_READABLE_IDLE_EXIT` (1800 s), `AGY_READABLE_HEDGE_AFTER` (8 s), `AGY_READABLE_STUCK_AFTER` (20 s), `AGY_READABLE_PART_WAIT` (10 s, how long to wait for a late piece of the answer).
+Environment variables override these and expose a few more: `AGY_READABLE_MODEL`, `AGY_READABLE_TIMEOUT`, `AGY_READABLE_REVIEW`, `AGY_READABLE_NOTES`, `AGY_READABLE_RETRIES`, `AGY_READABLE_KEEP`, `AGY_READABLE_AGY` (path to agy), `AGY_READABLE_BROWSER` (command that opens the sign-in page; `none` = link only), `AGY_READABLE_MIN_CHARS` (300), `AGY_READABLE_MAX_CHARS` (6000), `AGY_READABLE_REVIEWER`, `AGY_READABLE_REVIEW_MODEL` (main), `AGY_READABLE_CONTEXT_CHARS` (10000), `AGY_READABLE_CONTEXT_MESSAGE_CHARS` (2000), `AGY_READABLE_REVIEW_EFFORT` (low), `AGY_READABLE_CLAUDE` (path to claude), `AGY_READABLE_TRANSLATE`, `AGY_READABLE_CHUNK_CHARS` (4000, piece size for translating), `AGY_READABLE_TRANSLATE_MAX` (40000), `AGY_READABLE_DAEMON=0` (a one-shot `agy -p` per answer, nothing left running), `AGY_READABLE_SPARES` (1), `AGY_READABLE_IDLE_EXIT` (1800 s), `AGY_READABLE_HEDGE_AFTER` (8 s), `AGY_READABLE_STUCK_AFTER` (20 s), `AGY_READABLE_PART_WAIT` (10 s, how long to wait for a late piece of the answer).
 
 The instructions are in [`agy_readable/prompt_ko.txt`](agy_readable/prompt_ko.txt) (the free rewrite) and [`agy_readable/prompt_review_ko.txt`](agy_readable/prompt_review_ko.txt) (the second pass).
 

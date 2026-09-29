@@ -35,10 +35,15 @@ RETRIES = opt("RETRIES", 1)  # a rewrite the checks reject is asked for again, t
 KEEP = opt("KEEP", 20)  # the last N originals and rewrites kept in <data dir>/samples for comparing; 0 = none
 MIN_CHARS = opt("MIN_CHARS", 300)
 MAX_CHARS = opt("MAX_CHARS", 6000)
-REVIEWER = opt("REVIEWER", "opus")  # who does the second pass: "opus" (claude -p, see reviewer.py) or "agy"
-REVIEW_MODEL = opt("REVIEW_MODEL", "opus")  # the Claude model for it; any name `claude --model` takes
+REVIEWER = opt("REVIEWER", "claude")  # who does the second pass: "claude" (claude -p, see reviewer.py; "opus" too, as
+# in 0.6.0) or "agy"
+CLAUDE_REVIEWS = REVIEWER.lower() in ("claude", "opus")
+REVIEW_MODEL = opt("REVIEW_MODEL", "main")  # the Claude model for it: "main" = the one the conversation runs on
+# (read from the transcript; opus when it cannot be), or any name `claude --model` takes
 REVIEW_EFFORT = opt("REVIEW_EFFORT", "low")  # its effort level; "" = Claude Code's default
 CLAUDE = opt("CLAUDE", "claude")  # path to the Claude Code CLI
+CONTEXT_CHARS = opt("CONTEXT_CHARS", 10000)  # the conversation so far given with the answer (context.py); 0 = none
+CONTEXT_MESSAGE_CHARS = opt("CONTEXT_MESSAGE_CHARS", 2000)  # each message in it cut to this
 TRANSLATE = opt("TRANSLATE", True)  # an answer with sentences in another language is translated into Korean
 CHUNK_CHARS = opt("CHUNK_CHARS", 4000)  # a longer answer is cut at blank lines and its pieces translated side by side
 TRANSLATE_MAX = opt("TRANSLATE_MAX", 40000)  # longer answers are shown as they are

@@ -31,7 +31,7 @@ class ReviewerTest(unittest.TestCase):
         out = self.hook()
         self.assertTrue(out.startswith("[다듬음"))
         self.assertEqual(len(self.review_prompts()), 1)  # even with nothing suspect, Claude reads it all
-        self.assertRegex(self.last_log()["via"], r"review:opus-oneshot$")
+        self.assertRegex(self.last_log()["via"], r"review:claude-oneshot$")
 
     def test_claude_runs_bare_and_cannot_recurse(self):
         self.hook()
@@ -101,7 +101,7 @@ class ReviewerDaemonTest(unittest.TestCase):
         run_hook(self.env, event(SAMPLE))
         entry = read_jsonl(os.path.join(self.data, "hook.log"))[-1]
         self.assertEqual(entry["outcome"], "refined")
-        self.assertRegex(entry["via"], r"review:opus-warm$")
+        self.assertRegex(entry["via"], r"review:claude-warm$")
         reviews = [e for e in read_jsonl(os.path.join(self.data, "daemon.log")) if e.get("op") == "review"]
         self.assertTrue(reviews and reviews[-1]["ok"])
 

@@ -161,7 +161,7 @@ def missing(masked, draft):
 
 
 TRANSLATED = ("원문에는 한국어가 아닌 문장이 있고, 다시 쓴 글은 그것을 한국어로 옮긴 글이다. 원문 뜻을 그대로 옮긴 문장은 "
-              "말이 달라도 고치지 마라. 서비스·명령어·설정·파일 이름은 원문 표기 그대로여야 한다.\n")
+              "말이 달라도 고치지 마라(반말로 끝나면 5번대로 끝만 고쳐라). 서비스·명령어·설정·파일 이름은 원문 표기 그대로여야 한다.\n")
 
 
 def build(original, masked, draft, translated=False, always=False):

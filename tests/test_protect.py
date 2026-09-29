@@ -112,6 +112,13 @@ class RejectTest(unittest.TestCase):
     def test_hangul_number_turned_into_digits(self):
         self.rejected("방법은 세 가지입니다.", lambda m: "방법은 3가지입니다.", "원문에 없는 숫자가 생김: 3")
 
+    def test_english_number_word_may_become_digits(self):
+        out, why = rewrite("It took about one minute, twice as long as the sixth run.",
+                           lambda m: "약 1분 걸렸고, 6번째 실행보다 2배 길었습니다.")
+        self.assertIsNotNone(out, why)
+        self.rejected("It took about one minute.", lambda m: "약 1분, 5초 걸렸습니다.", "원문에 없는 숫자가 생김: 5")
+        self.rejected("Someone left.", lambda m: "1명이 떠났습니다.", "원문에 없는 숫자가 생김: 1")  # a word, not part of one
+
     def test_path_written_differently(self):
         text = "설정은 /etc/nginx/nginx.conf 에 있습니다."
         self.rejected(text, lambda m: m.replace(tok(text, "/etc/nginx/nginx.conf"), "/etc/nginx/conf.d"),

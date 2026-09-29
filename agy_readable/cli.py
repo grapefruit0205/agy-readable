@@ -113,8 +113,8 @@ def status():
     print(f"  data dir   {config.data_dir()}")
     print(f"  agy        {agy or '찾을 수 없음 (' + config.AGY + ')'}")
     print(f"  model      {config.MODEL}   timeout {config.TIMEOUT:g}s   notes {'on' if config.NOTES else 'off'}"
-          f"   review {('claude ' + config.REVIEW_MODEL if config.REVIEWER == 'opus' else config.REVIEWER) if config.REVIEW else 'off'}"
-          f"   retries {config.RETRIES}   keep {config.KEEP}"
+          f"   review {('claude ' + config.REVIEW_MODEL if config.CLAUDE_REVIEWS else config.REVIEWER) if config.REVIEW else 'off'}"
+          f"   retries {config.RETRIES}   keep {config.KEEP}   context {config.CONTEXT_CHARS}"
           f"   translate {'on' if config.TRANSLATE else 'off'}")
     p = ping()
     if p and p.get("auth_required"):

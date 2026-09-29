@@ -15,7 +15,7 @@ with the port and a token in a file only the user can read (see endpoint()), and
   {"op": "ask", "prompt": str, "timeout": s, "model": str, "weight": n?} -> {"ok": true, "text": str, "warm": bool, ...}
   ("weight": how many prompt characters' worth of time the answer should take; default the prompt's length)
                                                              | {"ok": false, "error": str, "timed_out": bool}
-  {"op": "review", "prompt": str, "timeout": s} -> {"ok": true, "text": str, "warm": bool} | {"ok": false, "error": str, ...}
+  {"op": "review", "prompt": str, "model": str, "timeout": s} -> {"ok": true, "text": str, "warm": bool} | {"ok": false, "error": str, ...}
   (the second pass by Claude: one waiting `claude -p` in stream-json mode is kept, see reviewer.py)
   {"op": "ping"} -> {"ok": true, "pid": int, "model": str, "auth_required": bool, "spares": [...]}
   {"op": "login_start", "auto": bool} -> {"ok": true, "url": str, "fresh": bool, "left": s} | {"ok": true, "already": true}
@@ -332,9 +332,10 @@ class Daemon:
         self.login = None
         self.last_auto_login = 0.0
         self.token = None  # with TCP, what every request must carry
-        self.reviewers = []  # waiting `claude -p` workers for the second pass (config.REVIEWER == "opus")
+        self.reviewers = []  # waiting `claude -p` workers for the second pass (config.CLAUDE_REVIEWS)
         self.reviewer_fails = 0
         self.next_reviewer = 0.0
+        self.reviewer_model = reviewer.model_for()  # the model the waiting Claude runs; follows the last request
 
     def take(self):
         """The workers to send a request to: a ready spare, else the oldest starting one plus a fresh one."""
@@ -451,16 +452,22 @@ class Daemon:
             thinking_tokens=w.usage.get("thinking_tokens"), output_tokens=w.usage.get("output_tokens"))
         return res
 
-    def take_reviewer(self):
-        """A waiting Claude if there is one (warm), else a fresh one."""
+    def take_reviewer(self, model):
+        """A waiting Claude on `model` if there is one (warm), else a fresh one. Waiting ones on another model
+        go: the next one kept waiting runs `model`."""
         with self.lock:
             self.last_used = time.time()
+            if model != self.reviewer_model:
+                self.reviewer_model = model
+                for old in [w for w in self.reviewers if w.model != model]:
+                    self.reviewers.remove(old)
+                    old.retire()
             ready = [w for w in self.reviewers if w.alive() and w.ready_at]
             w = ready[0] if ready else None
             if w:
                 self.reviewers.remove(w)
             else:
-                w = reviewer.ClaudeWorker()
+                w = reviewer.ClaudeWorker(model)
             self.busy.add(w)
             return w, bool(ready)
 
@@ -468,7 +475,7 @@ class Daemon:
         start = time.time()
         timeout = float(msg.get("timeout", config.TIMEOUT))
         try:
-            w, warm = self.take_reviewer()
+            w, warm = self.take_reviewer(msg.get("model") or reviewer.model_for())
         except OSError as e:
             return {"ok": False, "error": f"claude 실행 실패 ({e.strerror})"}
         try:
@@ -483,7 +490,7 @@ class Daemon:
             self.reviewer_fails = 0 if res["ok"] else self.reviewer_fails + 1
             self.next_reviewer = 0.0 if res["ok"] else time.time() + BACKOFF[min(self.reviewer_fails, len(BACKOFF)) - 1]
         res = dict(res, warm=warm, seconds=round(time.time() - start, 1))
-        log(op="review", worker=w.p.pid, model=config.REVIEW_MODEL, **{k: v for k, v in res.items() if k != "text"},
+        log(op="review", worker=w.p.pid, model=w.model, **{k: v for k, v in res.items() if k != "text"},
             chars_out=len(res.get("text", "")))
         return res
 
@@ -498,9 +505,9 @@ class Daemon:
             elif now - w.born > SPARE_MAX_AGE:
                 self.reviewers.remove(w)
                 w.retire()
-        if config.REVIEWER == "opus" and config.REVIEW and not self.reviewers and now >= self.next_reviewer:
+        if config.CLAUDE_REVIEWS and config.REVIEW and not self.reviewers and now >= self.next_reviewer:
             try:
-                self.reviewers.append(reviewer.ClaudeWorker())
+                self.reviewers.append(reviewer.ClaudeWorker(self.reviewer_model))
             except OSError as e:  # claude not installed
                 self.reviewer_fails += 1
                 self.next_reviewer = now + BACKOFF[min(self.reviewer_fails, len(BACKOFF)) - 1]
@@ -670,7 +677,7 @@ class Daemon:
                                "login": self.login.state() if self.login else None,
                                "spares": [{"pid": w.p.pid, "ready": bool(w.ready_at), "age": round(time.time() - w.born, 1)}
                                           for w in self.spares],
-                               "reviewers": [{"pid": w.p.pid, "ready": bool(w.ready_at), "age": round(time.time() - w.born, 1)}
+                               "reviewers": [{"pid": w.p.pid, "model": w.model, "ready": bool(w.ready_at), "age": round(time.time() - w.born, 1)}
                                              for w in self.reviewers]}
                 elif msg.get("op") == "login_start":
                     res = self.login_start(bool(msg.get("auto")))

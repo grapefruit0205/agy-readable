@@ -146,6 +146,20 @@ def numbers(text):
     return found
 
 
+WORD_NUMBERS = {w: str(i + 1) for i, w in enumerate(
+    "one two three four five six seven eight nine ten eleven twelve".split())}
+WORD_NUMBERS.update({w: str(i + 1) for i, w in enumerate(
+    "first second third fourth fifth sixth seventh eighth ninth tenth".split())})
+WORD_NUMBERS.update(once="1", twice="2", single="1", double="2", dozen="12", hundred="100", thousand="1000")
+WORD_NUMBER_RE = re.compile(r"\b(" + "|".join(WORD_NUMBERS) + r")\b", re.I)
+
+
+def spelled(text):
+    """Numbers the text writes as English words ("one minute", "the sixth run"), as digits: a translation
+    may write them either way."""
+    return {WORD_NUMBERS[m.group(1).lower()] for m in WORD_NUMBER_RE.finditer(TOKEN_RE.sub(" ", text))}
+
+
 def hedges(text):
     """How often each mark of certainty appears."""
     return Counter({h: text.count(h) for h in HEDGES if h in text})
@@ -195,8 +209,8 @@ def restore(original, masked, spans, out, ratio=(0.5, 2.0)):
     had, has = numbers(masked), numbers(out)
     if had - has:
         return None, "숫자가 빠지거나 바뀜: " + _short(sorted((had - has).elements()))
-    if set(has) - set(had):
-        return None, "원문에 없는 숫자가 생김: " + _short(sorted(set(has) - set(had)))
+    if set(has) - set(had) - spelled(masked):
+        return None, "원문에 없는 숫자가 생김: " + _short(sorted(set(has) - set(had) - spelled(masked)))
     lost = hedges(masked) - hedges(out)
     if lost:
         return None, "단서가 빠짐: " + _short(sorted(lost))
